@@ -29,6 +29,11 @@ var altSet = [][]string{
 	{"✘", "✔"},
 }
 
+type ratioDOC struct {
+	tela.DOC
+	LikesRatio float64
+}
+
 type shardKeys struct {
 	pageSize []byte
 	minLikes []byte
@@ -1194,15 +1199,15 @@ func createDOC(scid, dURL string) (doc tela.DOC) {
 }
 
 // Get TELA libraries from Gnomon DB
-func (t *tela_cli) getLibraries() (libKeys []tela.Library, libMap map[tela.Library][]tela.DOC) {
+func (t *tela_cli) getLibraries() (libKeys []tela.Library, libMap map[tela.Library][]ratioDOC) {
 	all := gnomon.GetAllOwnersAndSCIDs()
 	if len(all) < 1 {
 		return
 	}
 
-	libMap = map[tela.Library][]tela.DOC{}
+	libMap = map[tela.Library][]ratioDOC{}
 	for sc, owner := range all {
-		dURL, _, err := t.getLikesRatio(sc, true)
+		dURL, likesRatio, err := t.getLikesRatio(sc, true)
 		if err != nil {
 			continue
 		}
@@ -1226,12 +1231,12 @@ func (t *tela_cli) getLibraries() (libKeys []tela.Library, libMap map[tela.Libra
 
 				for _, scid := range scids {
 					doc := createDOC(scid, dURL)
-					libMap[tLib] = append(libMap[tLib], doc)
+					libMap[tLib] = append(libMap[tLib], ratioDOC{DOC: doc, LikesRatio: likesRatio})
 				}
 			} else {
 				// Single DOCs tagged as lib will be grouped by dURL and owner
 				doc := createDOC(sc, dURL)
-				libMap[tLib] = append(libMap[tLib], doc)
+				libMap[tLib] = append(libMap[tLib], ratioDOC{DOC: doc, LikesRatio: likesRatio})
 			}
 
 			if !slices.Contains(libKeys, tLib) {
@@ -1249,7 +1254,7 @@ func (t *tela_cli) getLibraries() (libKeys []tela.Library, libMap map[tela.Libra
 }
 
 // Parse library info from search queries and return resulting lines to print
-func parseLibraryInfo(lib tela.Library, docs map[tela.Library][]tela.DOC) (lines []string) {
+func parseLibraryInfo(lib tela.Library, docs map[tela.Library][]ratioDOC) (lines []string) {
 	identifier := fmt.Sprintf("Author: %s", lib.Author)
 	if lib.SCID != "" {
 		identifier = fmt.Sprintf("SCID: %s", lib.SCID)
@@ -1257,7 +1262,7 @@ func parseLibraryInfo(lib tela.Library, docs map[tela.Library][]tela.DOC) (lines
 
 	lines = append(lines, fmt.Sprintf("%sdURL:%s %-65s %s", logger.Color.Grey(), logger.Color.End(), lib.DURL, identifier))
 	for _, doc := range docs[lib] {
-		lines = append(lines, fmt.Sprintf("SCID: %s  DocType: %-13s  Name: %-33s  Likes: %s", doc.SCID, doc.DocType, doc.NameHdr, colorLikesRatio(lib.LikesRatio)))
+		lines = append(lines, fmt.Sprintf("SCID: %s  DocType: %-13s  Name: %-33s  Likes: %s", doc.SCID, doc.DocType, doc.NameHdr, colorLikesRatio(doc.LikesRatio)))
 	}
 
 	return

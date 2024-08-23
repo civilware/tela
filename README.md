@@ -40,7 +40,7 @@ TELA applications are built on two key smart contract components:
 
 Multiple `TELA-DOC-1` contracts can be installed and embedded within a `TELA-INDEX-1` application, allowing the use of extensive codebases beyond DERO’s [DVM-BASIC](https://docs.dero.io/developer/dvm.html) smart contract language. These contracts can also install necessary libraries and tools on the blockchain, facilitating modular development through reusable code.
 
-### Additional features of TELA
+### Additional features
 - File Management: TELA ensures application code remains in an unalterable state using a combination of mutable (`TELA-INDEX-1`) and immutable (`TELA-DOC-1`) contracts. This structure provides a commit-based system that allows for code updates, verification, and retrieval of previous contract states.
 
 - Connectivity: TELA supports DERO's XSWD protocol, enabling permissioned web socket interactions with DERO wallets, enhancing connectivity and user interaction.
