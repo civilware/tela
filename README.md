@@ -1,3 +1,5 @@
+![](https://github.com/civilware/tela/blob/main/tela.png?raw=true)
+
 ## TELA: Decentralized Web Standard <!-- omit in toc -->
 
 ### Table of Contents <!-- omit in toc -->
