@@ -1,0 +1,196 @@
+<!DOCTYPE HTML>
+<html lang="en-US">
+
+<head>
+    <title>TELA Demo Application</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <meta name="keywords" content="TELA, DERO Project, Civilware, DERO, $DERO" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <link rel="stylesheet" type="text/css" href="style.css">
+</head>
+
+<body>
+    <div style="position: sticky; top: 0px;">
+        <div id="greenIndicator" class="status"></div>
+        <div id="redIndicator" class="status"></div>
+        <div id="yellowIndicator" class="status"></div>
+    </div>
+
+    <div class="connect">
+        <button class="connect-button" id="connectButton">Connect</button>
+    </div>
+
+    <div id="svgCursor">
+        <svg id="svgCursorImg" data-name="svgCursorImg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 474.5 832.8">
+            <g id="Symbol">
+                <rect class="cls-2" y="714.2" width="118.61" height="118.61" />
+                <rect class="cls-1" x="355.9" width="118.61" height="118.61" />
+            </g>
+        </svg>
+    </div>
+
+    <div class="container">
+        <div class="title">
+            <svg id="titleImg" data-name="titleImg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1784.46 832.8">
+                <g id="Text">
+                    <polygon class="cls-3"
+                        points=".27 118.61 712.59 118.61 712.59 237.61 356.69 237.61 356.69 714.18 237.26 714.18 237.26 237.61 0 237.61 .27 118.61" />
+                    <rect class="cls-3" x="475.31" y="356.72" width="237.27" height="119.41" />
+                    <polygon class="cls-3"
+                        points="475.27 594.79 831.2 594.79 831.2 118.61 950.62 118.61 950.62 594.79 1188.68 594.79 1188.68 118.61 1784.46 713.61 1615.41 713.61 1308.06 406.95 1308.06 713.61 475.27 713.61 475.27 594.79" />
+                    <rect class="cls-2" x="356.69" y="714.2" width="118.61" height="118.61" />
+                    <rect class="cls-1" x="712.59" width="118.61" height="118.61" />
+                </g>
+            </svg>
+        </div>
+        <div style="text-align: center;">
+            <h1>TELA-DWEB</h1>
+        </div>
+        <div class="marquee">
+            <p>TELA Decentralized Web Standard Demo</p>
+        </div>
+        <div class="description">
+            This demo shows how a TELA application can be connected to a DERO wallet through XSWD.<br>
+            Below are various request examples that can be tried if connected to a wallet.<br>
+            The source code for this application can be found
+            <a href="https://github.com/civilware/tela/tree/main/tela_tests/app1" target="_blank"
+                rel="noreferrer noopener">here</a>.
+        </div>
+    </div>
+
+    <div class="typing-container">
+        <div class="display"><code id="typingLabel"></code></div>
+    </div>
+
+    <div class="actions">
+        <select id="selectCall" onchange="requestParams();">
+            <optgroup label="DERO">
+                <option>GetAddress</option>
+                <option>GetBalance</option>
+                <option>GetHeight</option>
+            </optgroup>
+            <optgroup label="Enigma">
+                <option>HandleTELALinks</option>
+                <option>GetLastIndexHeight</option>
+                <option>GetTxCount</option>
+                <option>GetOwner</option>
+                <option>GetAllOwnersAndSCIDs</option>
+                <option>GetAllNormalTxWithSCIDByAddr</option>
+                <option>GetAllNormalTxWithSCIDBySCID</option>
+                <option>GetAllSCIDInvokeDetails</option>
+                <option>GetAllSCIDInvokeDetailsByEntrypoint</option>
+                <option>GetAllSCIDInvokeDetailsBySigner</option>
+                <option>GetGetInfoDetails</option>
+                <option>GetSCIDVariableDetailsAtTopoheight</option>
+                <option>GetAllSCIDVariableDetails</option>
+                <option>GetSCIDKeysByValue</option>
+                <option>GetSCIDValuesByKey</option>
+                <option>GetLiveSCIDKeysByValue</option>
+                <option>GetLiveSCIDValuesByKey</option>
+                <option>GetSCIDInteractionHeight</option>
+                <option>GetInteractionIndex</option>
+                <option>GetInvalidSCIDDeploys</option>
+                <option>GetAllMiniblockDetails</option>
+                <option>GetMiniblockDetailsByHash</option>
+                <option>GetMiniblockCountByAddress</option>
+                <option>GetSCIDInteractionByAddr</option>
+            </optgroup>
+            <optgroup label="EPOCH">
+                <option>AttemptEPOCH</option>
+                <option>GetMaxHashesEPOCH</option>
+                <option>GetAddressEPOCH</option>
+                <option>GetSessionEPOCH</option>
+            </optgroup>
+        </select>
+        <div id="paramsContainer"></div>
+        <button class="call-button" onclick="callFor();">Call</button>
+    </div>
+
+    <div class="json-container">
+        <div class="json-display" id="jsonDisplayBody"></div>
+        <div class="arrow-18h" style="border-left: 18px solid var(--green);"></div>
+        <div class="arrow-20h" style="border-left: 20px solid var(--text);"></div>
+        <div class="arrow-18h" style="border-left: 18px solid var(--red);"></div>
+        <div class="json-display" id="jsonDisplayResult"></div>
+    </div>
+
+    <div>
+        <div class="icon">
+            <svg id="footIcon" data-name="footIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 474.5 832.8">
+                <g id="Symbol">
+                    <rect class="cls-2" y="714.2" width="118.61" height="118.61" />
+                    <rect class="cls-1" x="355.9" width="118.61" height="118.61" />
+                    <path class="cls-3"
+                        d="M355.9,118.61v119.44H.07L0,714.2h118.61v-119.47h355.9V118.61h-118.61ZM355.89,476.11H118.62v-119.41h237.27v119.41Z" />
+                </g>
+            </svg>
+        </div>
+    </div>
+
+    <a class="center-link" href="https://dero.io" target="_blank" rel="noreferrer noopener">dero.io</a>
+
+    <footer class="footer">
+        <div style="margin-top: 10px;">
+            <p>Crafted by Civilware</p>
+            <hr style="width: 100px;">
+            <p>2024</p>
+        </div>
+    </footer>
+
+    <div>
+        <div class="wave"></div>
+        <div class="wave"></div>
+        <div class="wave"></div>
+    </div>
+
+    <div class="svg-container">
+        <svg class="ring-image" id="ring1" data-name="ring1" xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 1947.86 1950.9">
+            <g id="ring1g" data-name="ring1g">
+                <path class="cls-r1"
+                    d="M1273.76,214.16l57.58-145.46C1220.25,24.69,1099.16.5,972.41.5c-59.72,0-118.18,5.37-174.94,15.66l28.06,153.89c47.65-8.64,96.74-13.15,146.88-13.15,106.41,0,208.09,20.31,301.35,57.26ZM1786.84,439.31c-68.12-103.26-155.35-192.81-256.65-263.59l-89.48,128.29c85.05,59.43,158.29,134.61,215.48,221.31l130.65-86.01ZM1781.11,848.14l154.52-24.32c-13.4-85.88-38.02-168.04-72.31-244.94l-142.92,63.62c28.79,64.57,49.46,133.55,60.71,205.64ZM331.88,1485.15l-122.38,97.38c87.34,109.64,197.83,200.02,324.07,263.76,21.56-43.37,45.04-90.71,69.53-140.15-105.62-53.48-198.08-129.2-271.22-220.99ZM972.41,1794c-29.33,0-58.29-1.54-86.82-4.56l-13.99,155.81c33.14,3.41,66.77,5.15,100.81,5.15,141.3,0,275.59-30.06,396.8-84.14l-65.56-142.06c-101.27,44.88-213.35,69.8-331.24,69.8ZM165.2,1111.95c-54.48,9.22-106.56,18.05-154.23,26.15,20.64,122.91,64.27,238.01,126.33,340.74l133.97-80.76c-52.12-86.26-88.75-182.92-106.07-286.13ZM422.55,369.09l-105.06-115.86C138.93,415.24,20.71,642.56.54,897.47l155.91,12.51c16.93-214.02,116.18-404.87,266.1-540.89ZM1599.21,1501.91l120.81,99.35c43.16-51.49,81.08-107.5,112.98-167.23l-138.06-73.57c-26.99,50.55-59.13,97.93-95.73,141.45ZM1946.71,939.51l-156.3,5.77c.37,10.01.55,20.07.55,30.17,0,103.33-19.15,202.19-54.09,293.22l146.06,56.02c41.63-108.42,64.43-226.17,64.43-349.24,0-12.03-.22-24.01-.65-35.94Z" />
+            </g>
+        </svg>
+    </div>
+
+    <div class="svg-container">
+        <svg class="ring-image2" id="ring2" data-name="ring2" xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 1773.58 1769.19">
+            <g id="ring2g" data-name="ring2g">
+                <path class="cls-r1"
+                    d="M608.88,293.31l-100.33-212.66c-164.57,77.77-301.35,204.73-391.36,361.89l204.14,116.67c66.13-115.48,166.63-208.76,287.55-265.9ZM821.24,234.46L797.57.55c-70.19,7.01-137.96,22.22-202.35,44.64l77.34,222.07c47.31-16.48,97.11-27.65,148.68-32.8ZM1257.72,77.24c-79.68-36.78-165.75-62.07-256.09-73.75l-30.46,233.13c66.37,8.58,129.61,27.16,188.16,54.18l98.39-213.56ZM1698.74,526.54c-33.08-75.37-76.35-145.26-128.06-207.91l-181.39,149.53c37.98,46.04,69.77,97.39,94.09,152.77l215.36-94.39ZM235.68,871.8l-235.06-3.82c-.08,4.8-.12,9.6-.12,14.42,0,218.68,79.2,418.86,210.49,573.43l179.25-152.1c-96.46-113.57-154.65-260.65-154.65-421.33,0-3.54.03-7.07.09-10.6ZM400.18,1623.27c86.78,57.12,184.19,99.39,288.61,123.21l52.52-229.19c-76.73-17.51-148.3-48.57-212.06-90.53l-129.07,196.51ZM886.79,1533.6c-16.67,0-33.2-.63-49.56-1.86l-17.89,234.42c22.26,1.68,44.76,2.53,67.45,2.53,189.84,0,365.74-59.69,509.96-161.33l-135.26-192.29c-105.97,74.67-235.21,118.53-374.7,118.53ZM1769.99,807.84l-234.28,19.78c1.51,18.06,2.28,36.33,2.28,54.78,0,114.73-29.67,222.54-81.77,316.16,78.79,44.01,151.06,84.58,204.98,115.21,71.27-127.67,111.88-274.78,111.88-431.37,0-25.11-1.04-49.98-3.09-74.56Z" />
+            </g>
+        </svg>
+    </div>
+
+    <div class="svg-container">
+        <svg class="ring-image3" id="ring3" data-name="ring3" xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 1705.29 1713.58">
+            <g id="ring3g" data-name="ring3g">
+                <path class="cls-r3"
+                    d="M1440.76,229.83c-97.41-90.76-216-159.1-347.54-196.79l-45.99,157.15c106.05,30.24,201.71,85.1,280.43,158.01l113.09-118.38ZM1020.67,1530.39l40.57,158.64c197.21-48.28,367.64-164.83,484.77-323.18l-132.91-95.58c-95.04,127.65-232.95,221.47-392.43,260.12ZM1452.53,1211.21c47.53,27.31,95.21,54.72,141.96,81.61,53.74-90.71,91.21-192.18,108.43-300.41l-161.97-24.06c-14.15,87.53-44.71,169.57-88.41,242.86ZM856.79,1549.88c-90.11,0-176.22-17.2-255.21-48.5l-59.77,152.44c97.5,38.57,203.77,59.76,314.97,59.76,13.64,0,27.19-.32,40.68-.96l-9.03-163.46c-10.48.48-21.05.72-31.65.72ZM204.04,1090.34l-154.7,53.71c74.62,209.76,228.67,381.86,425.95,480.12l72.64-146.73c-159.1-79.32-283.42-218.03-343.9-387.09ZM163.7,856.79c0-64.31,8.76-126.57,25.15-185.66l-157.1-46.21C11.06,698.67,0,776.44,0,856.79c0,44.87,3.45,88.93,10.1,131.93l162-23.69c-5.54-35.26-8.41-71.41-8.41-108.24ZM497.06,264.24l-82.98-141.14c-135.56,81.96-246.57,200.44-319.4,341.79l144.66,76.71c58.62-114.61,148.2-210.73,257.72-277.36ZM567.52,50.06l53.28,154.86c73.66-26.68,153.13-41.22,235.99-41.22,26.29,0,52.24,1.47,77.77,4.32l18.79-162.64C921.66,1.83,889.44,0,856.79,0,755.28,0,657.88,17.65,567.52,50.06ZM1705.29,737.08c-9.07-64.87-25.4-127.4-48.15-186.76l-153.93,55.93c19.12,49.26,32.76,101.26,40.18,155.23l161.91-24.4Z" />
+            </g>
+        </svg>
+    </div>
+
+    <script src="main.js"></script>
+    <script>
+        let mouseTimeout;
+        toggleIndicators("red");
+        document.getElementById("connectButton").addEventListener("click", connectWebSocket);
+
+        // Cursor effect
+        const svgCursor = document.getElementById("svgCursor");
+        document.addEventListener("mousemove", (event) => {
+            clearTimeout(mouseTimeout);
+            svgCursor.style.opacity = 1;
+            svgCursor.style.left = event.clientX - 12 + "px";
+            svgCursor.style.top = event.clientY - 15 + "px";
+            mouseTimeout = setTimeout(() => {
+                svgCursor.style.opacity = 0;
+            }, 200);
+        });
+    </script>
+</body>
+
+</html>

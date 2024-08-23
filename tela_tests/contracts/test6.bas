@@ -1,0 +1,8 @@
+// Test code for TELA parser, should be valid to parse with dvm.ParseSmartContract
+Function Initialize(u Uint64, s String) String
+10 RETURN 0
+End Function
+
+Function test2()
+10 RETURN 0
+End Function

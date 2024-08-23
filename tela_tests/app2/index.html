@@ -1,0 +1,60 @@
+<!DOCTYPE HTML>
+<html lang="en-US">
+
+<head>
+    <title>TELA Demo Application 2</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <meta name="keywords" content="TELA, DERO Project, Civilware, DERO, $DERO" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <link rel="stylesheet" type="text/css" href="css/style.css">
+</head>
+
+<body>
+    <div style="position: sticky; top: 0px;">
+        <div id="greenIndicator" class="status"></div>
+        <div id="redIndicator" class="status"></div>
+        <div id="yellowIndicator" class="status"></div>
+    </div>
+
+    <div class="connect">
+        <button class="connect-button" id="connectButton">Connect</button>
+    </div>
+
+    <div class="container">
+        <div class="title">
+            <svg id="titleImg" data-name="titleImg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1784.46 832.8">
+                <g id="Text">
+                    <polygon class="cls-3"
+                        points=".27 118.61 712.59 118.61 712.59 237.61 356.69 237.61 356.69 714.18 237.26 714.18 237.26 237.61 0 237.61 .27 118.61" />
+                    <rect class="cls-3" x="475.31" y="356.72" width="237.27" height="119.41" />
+                    <polygon class="cls-3"
+                        points="475.27 594.79 831.2 594.79 831.2 118.61 950.62 118.61 950.62 594.79 1188.68 594.79 1188.68 118.61 1784.46 713.61 1615.41 713.61 1308.06 406.95 1308.06 713.61 475.27 713.61 475.27 594.79" />
+                    <rect class="cls-2" x="356.69" y="714.2" width="118.61" height="118.61" />
+                    <rect class="cls-1" x="712.59" width="118.61" height="118.61" />
+                </g>
+            </svg>
+        </div>
+    </div>
+
+    <div class="typing-container">
+        <div class="display"><code id="typingLabel"></code></div>
+    </div>
+
+    <a class="center-link" href="https://dero.io" target="_blank" rel="noreferrer noopener">dero.io</a>
+
+    <footer class="footer">
+        <div style="margin-top: 10px;">
+            <p>Crafted by Civilware</p>
+            <hr style="width: 100px;">
+            <p>2024</p>
+        </div>
+    </footer>
+
+    <script src="js/main.js"></script>
+    <script>
+        toggleIndicators("red");
+        document.getElementById("connectButton").addEventListener("click", connectWebSocket);
+    </script>
+</body>
+
+</html>
