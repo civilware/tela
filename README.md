@@ -3,16 +3,16 @@
 ## TELA: Decentralized Web Standard <!-- omit in toc -->
 
 ### Table of Contents <!-- omit in toc -->
-- [What is TELA?](#what-is-tela)
-- [How it works](#how-it-works)
-- [Additional features](#additional-features)
-- [Get started](#get-started)
+- [What Is TELA?](#what-is-tela)
+- [How It Works](#how-it-works)
+- [Additional Features](#additional-features)
+- [Get Started](#get-started)
     - [TELA-INDEX-1](TELA-INDEX-1/README.md)
     - [TELA-DOC-1](TELA-DOC-1/README.md)
-- [Accessing TELA content](#accessing-tela-content)
+- [Accessing TELA Content](#accessing-tela-content)
     - [Compliant Host Applications](#compliant-host-applications)
-- [Content rating system](#content-rating-system)
-- [Package use](#package-use)
+- [Content Rating System](#content-rating-system)
+- [Package Use](#package-use)
 	- [Serving](#serving)
 	- [Installing](#installing)
 	- [Updating](#updating)
@@ -22,10 +22,10 @@
 - [Changelog](CHANGELOG.md)
 - [License](LICENSE)
 
-### What is TELA?
+### What Is TELA?
 TELA enables the secure and decentralized storage of application files on [DERO's](https://dero.io) blockchain using smart contracts. This innovative standard ensures the integrity and authenticity of stored files, allowing them to be retrieved from the blockchain and executed locally in a browser. By doing so, TELA enhances user privacy and control over browser-based applications, eliminating the reliance on third-party servers.
 
-### How it works
+### How It Works
 TELA applications are built on two key smart contract components:
 
 `TELA-INDEX-1` Contract: This serves as the entrypoint for TELA applications. Users can simply input the SCID (Smart Contract ID) of any deployed `TELA-INDEX-1` contract to retrieve the necessary files to run the application locally. This process can be demonstrated using tools like the `civilware/tela` [go package](https://pkg.go.dev/github.com/Civilware/tela) or similar methods to parse a `TELA-INDEX-1` according to this standard, creating a <b>host app</b> for all TELA content.
@@ -40,7 +40,7 @@ TELA applications are built on two key smart contract components:
 
 Multiple `TELA-DOC-1` contracts can be installed and embedded within a `TELA-INDEX-1` application, allowing the use of extensive codebases beyond DERO’s [DVM-BASIC](https://docs.dero.io/developer/dvm.html) smart contract language. These contracts can also install necessary libraries and tools on the blockchain, facilitating modular development through reusable code.
 
-### Additional features
+### Additional Features
 - File Management: TELA ensures application code remains in an unalterable state using a combination of mutable (`TELA-INDEX-1`) and immutable (`TELA-DOC-1`) contracts. This structure provides a commit-based system that allows for code updates, verification, and retrieval of previous contract states.
 
 - Connectivity: TELA supports DERO's XSWD protocol, enabling permissioned web socket interactions with DERO wallets, enhancing connectivity and user interaction.
@@ -49,7 +49,7 @@ Multiple `TELA-DOC-1` contracts can be installed and embedded within a `TELA-IND
 
 By leveraging these components and features, TELA represents a significant advancement in secure, decentralized web applications, fostering an environment where privacy, security, and user autonomy are paramount.
 
-### Get started
+### Get Started
 See the following for more information on how to get started creating and installing your TELA application:
 
 * [TELA-INDEX-1](TELA-INDEX-1/README.md)
@@ -60,7 +60,7 @@ See the following for more information on how to get started creating and instal
 
   TELA application files and libraries
 
-### Accessing TELA content
+### Accessing TELA Content
 The minimum requirements to access TELA content are:
 * Connection to a DERO node
 * Any <b>host application</b> that can serve TELA content
@@ -71,7 +71,7 @@ The `civilware/tela` go package aims to be a simple entrypoint for hosting and m
 * [Engram](https://github.com/DEROFDN/Engram/)
 * [TELA-CLI](cmd/tela-cli/README.md)
 
-### Content rating system
+### Content Rating System
 TELA smart contracts have a rating system integrated into each contract to help developers and users navigate content. Ratings can be interpreted for a quick judgment, or can be used to gather further details about content. A guide to the content rating system is as follows:
 - One rating per DERO account, per contract.
 - A rating is a positive number < 100.
@@ -88,7 +88,7 @@ Numbers are broken down into place values.
 
 Each place is given different values. The first place represents the <i>rating category</i>. 
 
-<b>Rating categories</b>
+<b>Rating Categories</b>
 
 | First Place | Category           |
 |-------------|--------------------|
@@ -105,7 +105,7 @@ Each place is given different values. The first place represents the <i>rating c
 
 The second place represents a <i>detail tag</i>. Positive and negative rating categories each have their own set of detail tags, sharing some common ones between them.
 
-<b>Detail tags</b>
+<b>Detail Tags</b>
 | Second Place | Negative Detail Tags | Positive Detail Tags |
 |--------------|----------------------|----------------------|
 | 0            | Nothing              | Nothing              |
@@ -128,7 +128,7 @@ This format would produce the following strings given some example rating number
 | 43           | Should be improved, Bugs    |
 | 7            | Do not use, Corrupted       |
 
-### Package use
+### Package Use
 The main usage of the `civilware/tela` go package is to query a deployed `TELA-INDEX-1` SCID from a connected node and serve the content on a URL such as `localhost:8081/tela/`
 
 #### Serving
