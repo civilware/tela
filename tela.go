@@ -110,6 +110,8 @@ const DEFAULT_PORT_START = 8082 // Default start port for servers
 const DEFAULT_MIN_PORT = 1200   // Minimum port of possible serving range
 const DEFAULT_MAX_PORT = 65535  // Maximum port of possible serving range
 
+const MINIMUM_GAS_FEE = uint64(100) // Minimum gas fee used when making transfers
+
 const TAG_LIBRARY = ".lib"
 
 const TELA_VERSION = "1.0.0"
@@ -427,8 +429,8 @@ func transfer(wallet *walletapi.Wallet_Disk, ringsize uint64, args rpc.Arguments
 		return
 	}
 
-	if gasResult.GasStorage < 90 {
-		gasResult.GasStorage = 90
+	if gasResult.GasStorage < MINIMUM_GAS_FEE {
+		gasResult.GasStorage = MINIMUM_GAS_FEE
 	}
 
 	tx, err := wallet.TransferPayload0(transfers, ringsize, false, args, gasResult.GasStorage, false)
