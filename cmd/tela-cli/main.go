@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -525,7 +524,7 @@ func main() {
 				continue
 			}
 
-			err = os.MkdirAll(path.Dir(args[1]), os.ModePerm)
+			err = os.MkdirAll(filepath.Dir(args[1]), os.ModePerm)
 			if err != nil {
 				logger.Errorf("[%s] Move: %s\n", appName, err)
 				continue
@@ -1035,7 +1034,7 @@ func main() {
 			}
 
 			// Get DOC and install data
-			fileName := path.Base(filePath)
+			fileName := filepath.Base(filePath)
 
 			if !tela.IsAcceptedLanguage(tela.ParseDocType(fileName)) {
 				logger.Errorf("[%s] %q is not a valid docType\n", appName, fileName)

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 
 	"github.com/deroproject/derohe/walletapi"
@@ -27,7 +26,7 @@ func boltStoreEncryptedValue(disk *walletapi.Wallet_Disk, bucket string, key []b
 	}
 
 	var db *bbolt.DB
-	db, err = bbolt.Open(filepath.Join(shard, path.Base(shard)+".db"), 0600, nil)
+	db, err = bbolt.Open(filepath.Join(shard, filepath.Base(shard)+".db"), 0600, nil)
 	if err != nil {
 		return
 	}
@@ -156,7 +155,7 @@ func boltGetEncryptedValue(disk *walletapi.Wallet_Disk, bucket string, key []byt
 	}
 
 	var db *bbolt.DB
-	db, err = bbolt.Open(filepath.Join(shard, path.Base(shard)+".db"), 0600, nil)
+	db, err = bbolt.Open(filepath.Join(shard, filepath.Base(shard)+".db"), 0600, nil)
 	if err != nil {
 		return
 	}
@@ -192,7 +191,7 @@ func boltDeleteKey(disk *walletapi.Wallet_Disk, bucket string, key []byte) (err 
 	shard := GetShard(disk)
 
 	var db *bbolt.DB
-	db, err = bbolt.Open(filepath.Join(shard, path.Base(shard)+".db"), 0600, nil)
+	db, err = bbolt.Open(filepath.Join(shard, filepath.Base(shard)+".db"), 0600, nil)
 	if err != nil {
 		return
 	}

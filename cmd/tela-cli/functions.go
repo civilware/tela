@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -368,7 +367,7 @@ func (t *tela_cli) openWallet(file, password string) (err error) {
 
 	for password == "" {
 		var line []byte
-		line, err = t.readWithPasswordPrompt(fmt.Sprintf("Enter %s password", path.Base(file)))
+		line, err = t.readWithPasswordPrompt(fmt.Sprintf("Enter %s password", filepath.Base(file)))
 		if err != nil {
 			return
 		}
@@ -884,7 +883,7 @@ func (t *tela_cli) getCLIInfo() (allInfo []string) {
 		walletName = t.wallet.name
 	}
 
-	allInfo = append(allInfo, fmt.Sprintf("Wallet: %s", path.Base(walletName)))
+	allInfo = append(allInfo, fmt.Sprintf("Wallet: %s", filepath.Base(walletName)))
 	allInfo = append(allInfo, fmt.Sprintf("Network: %s", strings.ToLower(getNetworkInfo())))
 
 	if walletapi.IsDaemonOnline() {

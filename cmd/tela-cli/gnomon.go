@@ -25,6 +25,11 @@ var gnomon gnomes
 
 const maxParallelBlocks = 10
 
+const gnomonSearchFilter = `Function init() Uint64
+10 IF EXISTS("owner") == 0 THEN GOTO 30
+20 RETURN 1
+30 STORE("owner", address())`
+
 // Stop all indexers and close Gnomon
 func stopGnomon() {
 	if gnomon.Indexer != nil {
@@ -83,12 +88,7 @@ func startGnomon(endpoint string) {
 			}
 
 			exclusions := []string{"bb43c3eb626ee767c9f305772a6666f7c7300441a0ad8538a0799eb4f12ebcd2"}
-			filter := []string{
-				"Function init() Uint64", // both SCs should have all these line
-				"Function address() Uint64",
-				"Function Rate() Uint64",
-				`33 STORE("dURL", "<dURL>")`,
-			}
+			filter := []string{gnomonSearchFilter}
 
 			// Fastsync Config
 			config := &structures.FastSyncConfig{

@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -226,12 +225,12 @@ func parseAndSaveTELADoc(filePath, code, doctype string) (err error) {
 		return
 	}
 
-	err = os.MkdirAll(path.Dir(filePath), os.ModePerm)
+	err = os.MkdirAll(filepath.Dir(filePath), os.ModePerm)
 	if err != nil {
 		return
 	}
 
-	logger.Printf("[TELA] Creating %s\n", path.Base(filePath))
+	logger.Printf("[TELA] Creating %s\n", filepath.Base(filePath))
 
 	return os.WriteFile(filePath, []byte(comment), 0644)
 }
