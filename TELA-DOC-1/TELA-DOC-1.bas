@@ -39,7 +39,7 @@ Function Rate(r Uint64) Uint64
 15 LET addr = address()
 16 IF r < 100 && EXISTS(addr) == 0 && addr != "anon" THEN GOTO 30
 20 RETURN 1
-30 STORE(addr, ""+r+"_"+BLOCK_HEIGHT())
+30 STORE(addr, ITOA(r)+"_"+BLOCK_HEIGHT())
 40 IF r < 50 THEN GOTO 70
 50 STORE("likes", LOAD("likes")+1)
 60 RETURN 0
