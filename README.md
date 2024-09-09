@@ -235,7 +235,7 @@ func main() {
 
 	// // //
 	// //
-	// Alternatively, Updater() takes a INDEX and updates it with the given walletapi
+	// Alternatively, Updater() takes an INDEX and updates it with the given walletapi
 	txid, err := tela.Updater(&walletapi.Wallet_Disk{}, index)
 	if err != nil {
 		// Handle error
