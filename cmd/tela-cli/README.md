@@ -17,6 +17,7 @@
     - [Shutdown servers](#shutdown-servers)
     - [Install TELA-DOC](#install-tela-doc)
     - [Install TELA-INDEX](#install-tela-index)
+    - [Update TELA-INDEX](#update-tela-index)
     - [Rate TELA content](#rate-tela-content)
 - [TELA](../../README.md)
 
@@ -50,7 +51,7 @@ tela-cli
 ```
 
 #### Flags
-When starting TELA-CLI, a `--flag` may be provided to initialize various settings and values.
+When starting TELA-CLI, a `--flag` may be provided to initialize various settings and values. If TELA-CLI has been previously connected on the device it will use the stored settings from the previous session as its defaults if no flags are provided.
 ```
 Usage:
   tela-cli [options]
@@ -59,8 +60,9 @@ Usage:
 Options:
   -h --help     Show this screen
   --debug       Enable debug mode
-  --testnet     Enable wallet testnet flag
-  --simulator   Enable wallet simulator flag
+  --mainnet     Set the network to mainnet
+  --testnet     Set the network to testnet
+  --simulator   Set the network to simulator
 
   --db-type=<gravdb>           Set DB type to use for preferences and encrypted storage, either gravdb or boltdb
   --wallet=<file.db>           Open a DERO wallet file
@@ -89,9 +91,16 @@ endpoint remote              - Set the network to mainnet and daemon endpoint to
 endpoint close               - Close connection with current daemon endpoint
 
 clone <scid>                 - Clone TELA content from SCID
+clone <scid>@<txid>          - Clone TELA content from SCID at commit TXID if the TX data is available from the daemon
 
 mv <source> <destination>    - Move a file or directory
 rm <source>                  - Remove a file or directory, it will only remove from within the datashards/clone directory
+
+file-info <source>           - Get source file information
+file-shard <source>          - Take a source file and create DocShards files intended to be embedded in an INDEX and recreated as source when served
+file-construct <source>      - Take a DocShard file and construct the original source file using the matching DocShards in the directory
+file-diff <source> <compare> - View the line differences between a source and comparison file
+scid-diff <scid1> <scid2>    - View the line differences between two smart contracts
 
 serve <scid>                 - Serve TELA content from SCID
 serve local <directory>      - Serve content from local directory, useful for testing TELA content pre install
@@ -110,31 +119,49 @@ colors <true>                - Set colors true/false to enable terminal colors
 
 wallet <file.db>             - Open a DERO wallet file at path
 wallet close                 - Close wallet file if active 
+balance                      - View the connected wallet's balances
 
 rate <scid>                  - Rate a TELA smart contract
 install-doc <file.html>      - Start guided TELA-DOC smart contract install
 install-index <name>         - Start guided TELA-INDEX smart contract install
 update-index <scid>          - Start guided TELA-INDEX smart contract update
 
+mods                         - Print all available TELA-MOD info
+mods <class>                 - Print available info on a TELA-MODClass
+mod-info <tag>               - Print info on a TELA-MOD by its tag
+
+set-var <scid>               - Set a key/value store on a SCID
+delete-var <scid>            - Delete a key/value store on a SCID, this is a owners only function
+sc-execute <function>        - Execute a TELA-MOD smart contract function
+
 gnomon start                 - Start Gnomon indexer
 gnomon stop                  - Stop Gnomon indexer
 gnomon resync                - Stop Gnomon indexer if running, delete Gnomon DB for current network and restart Gnomon indexer
+gnomon add <scid>            - Add TELA SCID(s) to the local Gnomon DB
 gnomon clean <network>       - Delete Gnomon indexer DB for network
 
 search all                   - Search all TELA SCIDs in Gnomon DB
+search key <key>             - Search all TELA SCIDs in Gnomon DB that contain a key store
+search value <value>         - Search all TELA SCIDs in Gnomon DB that contain a value store
 search scid <scid>           - Search by SCID
+search scid vars <scid>      - Search all variables stored in a SCID
 search docs                  - Search all TELA DOCs
 search docs <docType>        - Search TELA DOCs by type
 search indexes               - Search all TELA INDEXs
 search libs                  - Search all dURLs tagged as libraries
 search durl <dURL>           - Search by dURL
-search code <scid>           - Search for SC code by SCID 
+search code <scid>           - Search for SC code by SCID
+search line <line>           - Search for a line of code in all SCs
 search author <address>      - Search by author address
 search min-likes <30>        - Sets the minimum likes % required to be a valid search result, 0 will not filter any content
 search ratings <scid>        - Search ratings for a SCID, <height> can be added to filter results (min-likes will not apply to rating search results)
 search my docs               - Search all DOCs installed for connected wallet (min-likes will not apply to any of the my search results)
 search my docs <docType>     - Search all Docs by type for connected wallet
 search my indexes            - Search all INDEXs for connected wallet
+search exclude view          - View all current search exclusions
+search exclude clear         - Clear all current search exclusions
+search exclude add <text>    - Add a filter to exclude SCIDs containing <text> in their dURL
+search exclude remove <text> - Remove a specific search exclusion
 ```
 
 #### Readline
@@ -185,7 +212,7 @@ Use the `wallet` command to enter guided wallet connection, or use `wallet <path
 Once Gnomon is online, installed TELA content can be searched with a variety of queries like `search docs` to find all TELA documents or `search indexes` to find all TELA indexes. Search results can be filtered by ratings using `search min-likes <50>` to omit any results below that percentage.
 ```
 [01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:0] [0/21] » search indexes 
-[01/02/2006 15:04:05]  INFO  TELA-CLI: Showing 1 of 8 results
+[01/02/2006 15:04:05]  INFO  TELA-CLI: Showing 2 of 8 results
 ------------
 dURL: app.tela                                                          Author: deto1qyre7td6x9r88y4cavdgpv6k7lvx6j39lfsx420hpvh3ydpcrtxrxqg8v8e3z
 SCID: f0dfcb506fe313bfdd1b5f6ceaeaa01ef2725c81848418f6a8590743a14920f0  Type: TELA-INDEX-1      Name: TELA Application                   Likes: 50%
@@ -193,11 +220,11 @@ SCID: f0dfcb506fe313bfdd1b5f6ceaeaa01ef2725c81848418f6a8590743a14920f0  Type: TE
 dURL: dero.lib                                                          Author: deto1qy87ghfeeh6n6tdxtgh7yuvtp6wh2uwfzvz7vjq0krjy4smmx62j5qgqht7t3
 SCID: adb26e75d411c8d27f3f2e1ee06bc0dd2d41a8087bf316ef3f446214ca0656ef  Type: TELA-INDEX-1      Name: A DERO library                     Likes: 80%
 ------------
-[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:0] [0/21] Show more results? (7) (y/n) »   
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:0] [0/21] Show more results? (6) (y/n) »   
 ```
 
 #### Serve TELA content
-Use `serve <scid>` to serve the TELA content from that SCID. TELA-CLI's default setting is to open served content in the devices default browser.
+Use `serve <scid>` to serve the TELA content from that SCID. TELA-CLI's default setting is to open served content in the devices default browser. Content that has been updated since its deployment will be restricted, running command `updates true` will allow updated content to be served.
 ```
 [01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▼] [W:0] [0/21] » serve f0dfcb506fe313bfdd1b5f6ceaeaa01ef2725c81848418f6a8590743a14920f0
 [01/02/2006 15:04:05]  INFO  TELA: Creating main.js
@@ -235,7 +262,7 @@ Use `shutdown <name>` to shutdown a server by name. Use `shutdown all` to shutdo
 ```
 
 #### Install TELA-DOC
-Use `install-doc` to enter guided install. Using `install-doc <file.html>` will start guided install from a file name. It is recommended to have Gnomon running when installing so that the installed contract will be immediately added to your local DB.
+Use `install-doc` to enter guided install. Using `install-doc <file.html>` will start guided install from a file path. It is recommended to have Gnomon running when installing so that the installed contract will be immediately added to your local DB.
 ```
 [01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] » install-doc README.md 
 [01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Confirm password (7) » 
@@ -255,10 +282,11 @@ S: 18c12ed2e8ca950d5cc14c2725751230dea855c20b28cd2c7869b910b70e0578
 ```
 
 #### Install TELA-INDEX
-Use `install-index` to enter guided install, Using `install-index <appName>` will start guided install with a index name. It is recommended to have Gnomon running when installing so that the installed contract will be immediately added to your local DB.
+Use `install-index` to enter guided install. It is recommended to have Gnomon running when installing so that the installed contract will be immediately added to your local DB. `TELA-MODs` can be added during the installation process to enable custom smart contract functionalities. More information about `TELA-MODs` can be found [here](../../TELA-MOD-1/README.md). Installing an INDEX with ringsize above 2 will make it immutable.
 ```
-[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] » install-index myApp
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] » install-index
 [01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Confirm password (7) » 
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Enter INDEX name » myApp 
 [01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Enter INDEX description » Index description (can be empty)
 [01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Enter INDEX icon » https://iconurl.com (can be empty)
 [01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Enter INDEX dURL » app.tela
@@ -266,9 +294,32 @@ Use `install-index` to enter guided install, Using `install-index <appName>` wil
 [01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Enter DOC1 SCID » 8232dd8e909bdc095ab213a035a70a94b64b2e4763a959f4fe3065f8f9fbc2df
 [01/02/2006 15:04:05]  INFO  TELA-CLI: File: index.html
 [01/02/2006 15:04:05]  INFO  TELA-CLI: Author: deto1qyre7td6x9r88y4cavdgpv6k7lvx6j39lfsx420hpvh3ydpcrtxrxqg8v8e3z
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Add SC TELA-MODs (y/n) » n
 [01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Enter INDEX install ringsize » 2
 [01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Confirm INDEX install (y/n) » y
 [01/02/2006 15:04:05]  INFO  TELA-CLI: INDEX install TXID: daab713d2c0ee0d0efacb5990dcc5df227b847ab3f064fe28ae8e3d946f903cb
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] »  
+```
+
+#### Update TELA-INDEX
+Owners can update their INDEX smart contracts by using `update-index <scid>` to enter a guided update for the given SCID. If an INDEX's version is behind the latest, updating will pull in any required smart contract changes to update it to the latest version, matching the TELA standard. When updating a smart contract, existing `TELA-MODs` can be removed or new `TELA-MODs` can be added to introduce custom smart contract functionalities. More information about `TELA-MODs` can be found [here](../../TELA-MOD-1/README.md). 
+```
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] » update-index b0f24cac2045e2b21eb2885f4da1f2771cfdf88863f5f602b47ea897ae40fa83
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Confirm password (7) » 
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Enter INDEX name » myApp
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Enter INDEX description » Index description (can be empty)
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Enter INDEX icon » https://iconurl.com (can be empty)
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Enter INDEX dURL » app.tela
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] How many total documents are embedded in this INDEX? » 2
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Enter DOC1 SCID » 8232dd8e909bdc095ab213a035a70a94b64b2e4763a959f4fe3065f8f9fbc2df
+[01/02/2006 15:04:05]  INFO  TELA-CLI: File: index.html
+[01/02/2006 15:04:05]  INFO  TELA-CLI: Author: deto1qyre7td6x9r88y4cavdgpv6k7lvx6j39lfsx420hpvh3ydpcrtxrxqg8v8e3z
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Enter DOC1 SCID » a82e92b0d1210f7b161e8c9f5a1aa1a7277b7852450d488c47059724a62cf0dc
+[01/02/2006 15:04:05]  INFO  TELA-CLI: File: main.js
+[01/02/2006 15:04:05]  INFO  TELA-CLI: Author: deto1qyre7td6x9r88y4cavdgpv6k7lvx6j39lfsx420hpvh3ydpcrtxrxqg8v8e3z
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Add SC TELA-MODs (y/n) » n
+[01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] Confirm INDEX update (y/n) » y
+[01/02/2006 15:04:05]  INFO  TELA-CLI: INDEX update TXID: 2694052c159b3d31bfaf9d562a6bc2f283429c1d334a03bd44765c893edbfbc9
 [01/02/2006 15:04:05]  ⠞⠑⠇⠁ TELA-CLI: [D:▲] [G:▲] [W:1337] [0/21] »  
 ```
 

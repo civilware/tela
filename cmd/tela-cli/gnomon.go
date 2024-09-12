@@ -9,6 +9,7 @@ import (
 	"github.com/civilware/Gnomon/indexer"
 	"github.com/civilware/Gnomon/storage"
 	"github.com/civilware/Gnomon/structures"
+	"github.com/civilware/tela"
 	"github.com/civilware/tela/logger"
 	"github.com/civilware/tela/shards"
 	"github.com/deroproject/derohe/globals"
@@ -25,18 +26,28 @@ var gnomon gnomes
 
 const maxParallelBlocks = 10
 
-const gnomonSearchFilter = `Function init() Uint64
+const gnomonSearchFilterDOC = `Function init() Uint64
 10 IF EXISTS("owner") == 0 THEN GOTO 30
 20 RETURN 1
-30 STORE("owner", address())`
+30 STORE("owner", address())
+50 STORE("docVersion", "1`
+
+const gnomonSearchFilterINDEX = `Function init() Uint64
+10 IF EXISTS("owner") == 0 THEN GOTO 30
+20 RETURN 1
+30 STORE("owner", address())
+50 STORE("telaVersion", "1`
 
 // Stop all indexers and close Gnomon
-func stopGnomon() {
+func stopGnomon() (stopped bool) {
 	if gnomon.Indexer != nil {
 		gnomon.Indexer.Close()
 		gnomon.Indexer = nil
 		logger.Printf("[Gnomon] Closed all indexers\n")
+		stopped = true
 	}
+
+	return
 }
 
 // Start the Gnomon indexer
@@ -88,7 +99,7 @@ func startGnomon(endpoint string) {
 			}
 
 			exclusions := []string{"bb43c3eb626ee767c9f305772a6666f7c7300441a0ad8538a0799eb4f12ebcd2"}
-			filter := []string{gnomonSearchFilter}
+			filter := []string{gnomonSearchFilterDOC, gnomonSearchFilterINDEX}
 
 			// Fastsync Config
 			config := &structures.FastSyncConfig{
@@ -147,7 +158,6 @@ func (g *gnomes) GetSCIDValuesByKey(scid string, key interface{}) (valuesstring 
 }
 
 // Method of Gnomon GetSCIDKeysByValue() where DB type is defined by Indexer.DBType
-//   - Default is boltdb
 func (g *gnomes) GetSCIDKeysByValue(scid string, key interface{}) (valuesstring []string, valuesuint64 []uint64) {
 	switch g.Indexer.DBType {
 	case "gravdb":
@@ -157,4 +167,53 @@ func (g *gnomes) GetSCIDKeysByValue(scid string, key interface{}) (valuesstring 
 	default:
 		return
 	}
+}
+
+// Get the "owner" store from a SCID
+func (g *gnomes) GetOwnerAddress(scid string) (owner string) {
+	if g.Indexer == nil {
+		return
+	}
+
+	address, _ := g.GetSCIDValuesByKey(scid, "owner")
+	if address != nil && address[0] != "anon" {
+		owner = address[0]
+	}
+
+	return
+}
+
+// Method of Gnomon Indexer.AddSCIDToIndex() configured for TELA-CLI
+func (g *gnomes) AddSCIDToIndex(scids map[string]*structures.FastSyncImport) error {
+	return g.Indexer.AddSCIDToIndex(scids, false, false)
+}
+
+// Manually add SCID(s) to Gnomon index if they can be validated as TELA contracts
+func (t *tela_cli) addToIndex(scids []string) (err error) {
+	for _, scid := range scids {
+		if len(scid) == 64 {
+			_, err := tela.GetDOCInfo(scid, t.endpoint)
+			if err != nil {
+				_, errr := tela.GetINDEXInfo(scid, t.endpoint)
+				if errr != nil {
+					logger.Errorf("[%s] GetDOCInfo: %s\n", appName, err)
+					logger.Errorf("[%s] GetINDEXInfo: %s\n", appName, errr)
+					return fmt.Errorf("could not validate %s as TELA INDEX or DOC", scid)
+				}
+			}
+		}
+	}
+
+	filters := gnomon.Indexer.SearchFilter
+	gnomon.Indexer.SearchFilter = []string{}
+	scidsToAdd := map[string]*structures.FastSyncImport{}
+
+	for _, sc := range scids {
+		scidsToAdd[sc] = &structures.FastSyncImport{}
+	}
+
+	err = gnomon.AddSCIDToIndex(scidsToAdd)
+	gnomon.Indexer.SearchFilter = filters
+
+	return
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -13,12 +14,16 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/chzyer/readline"
 	"github.com/civilware/tela"
 	"github.com/civilware/tela/logger"
 	"github.com/civilware/tela/shards"
+	"github.com/deroproject/derohe/cryptography/crypto"
+	"github.com/deroproject/derohe/dvm"
 	"github.com/deroproject/derohe/globals"
+	"github.com/deroproject/derohe/rpc"
 	"github.com/deroproject/derohe/walletapi"
 )
 
@@ -36,6 +41,7 @@ type ratioDOC struct {
 type shardKeys struct {
 	pageSize []byte
 	minLikes []byte
+	exclude  []byte
 	gnomon   struct {
 		fastsync       []byte
 		parallelBlocks []byte
@@ -44,14 +50,19 @@ type shardKeys struct {
 
 var keys shardKeys
 
+const CHUNK_SIZE = 17500
+
+const printDivider = "------------------------------"
+
 // Initialize TELA-CLI
 func init() {
 	parseHelpFlag() // Parse help argument
 	logger.ASCIIPrint(false)
-	fmt.Println("TELA: Decentralized Web Standard")
+	fmt.Printf("TELA: Decentralized Web Standard  v%s\n", tela.GetVersion().String())
 	fmt.Print("Initializing...")
 	keys.pageSize = []byte("tela-cli.page-size")
 	keys.minLikes = []byte("tela-cli.search-min-likes")
+	keys.exclude = []byte("tela-cli.search-exclusions")
 	keys.gnomon.fastsync = []byte("tela-cli.gnomon.fastsync")
 	keys.gnomon.parallelBlocks = []byte("tela-cli.gnomon.parallel-blocks")
 	done := make(chan struct{})
@@ -93,7 +104,10 @@ func parseHelpFlag() {
 }
 
 // Parse and return start flags
-func parseFlags() (arguments map[string]string) {
+func (t *tela_cli) parseFlags() (arguments map[string]string) {
+	var networkIsSet bool
+
+	// Parse start flags
 	arguments = map[string]string{}
 	for i, a := range os.Args {
 		if i == 0 {
@@ -104,19 +118,22 @@ func parseFlags() (arguments map[string]string) {
 		arguments[flag] = strings.TrimSpace(arg)
 		switch flag {
 		case "--testnet", "--simulator":
+			networkIsSet = true
 			globals.Arguments[flag] = true
 			logger.Printf("[%s] %s enabled\n", appName, flag)
 			if flag == "--simulator" {
-				if !globals.Arguments["--testnet"].(bool) {
-					globals.Arguments["--testnet"] = true
-				}
+				globals.Arguments["--testnet"] = true
 			}
+		case "--debug":
+			globals.Arguments["--debug"] = true
 		}
 	}
 
-	globals.Arguments["--debug"] = false
-	if _, ok := arguments["--debug"]; ok {
-		globals.Arguments["--debug"] = true
+	if _, ok := arguments["--mainnet"]; ok {
+		networkIsSet = true
+		globals.Arguments["--testnet"] = false
+		globals.Arguments["--simulator"] = false
+		logger.Printf("[%s] --mainnet enabled\n", appName)
 	}
 
 	if arg, ok := arguments["--db-type"]; ok {
@@ -129,41 +146,130 @@ func parseFlags() (arguments map[string]string) {
 		}
 	}
 
-	if arg, ok := arguments["--fastsync"]; ok {
-		if arg != "" {
-			b, err := strconv.ParseBool(arg)
+	if arg, ok := arguments["--fastsync"]; ok && arg != "" {
+		b, err := strconv.ParseBool(arg)
+		if err != nil {
+			logger.Warnf("[%s] %s: %s\n", appName, "--fastsync", err)
+		} else {
+			logger.Printf("[%s] %s=%t\n", appName, "--fastsync", b)
+			err = shards.StoreSettingsValue(keys.gnomon.fastsync, []byte(arg))
 			if err != nil {
-				logger.Warnf("[%s] %s: %s\n", appName, "--fastsync", err)
+				logger.Debugf("[%s] Storing fastsync: %s\n", appName, err)
+			}
+
+			gnomon.fastsync = b
+		}
+	} else {
+		fastsync, err := shards.GetSettingsValue(keys.gnomon.fastsync)
+		if err != nil {
+			logger.Debugf("[%s] Getting fastsync: %s\n", appName, err)
+		} else {
+			if b, err := strconv.ParseBool(string(fastsync)); err != nil {
+				logger.Debugf("[%s] Setting fastsync: %s\n", appName, err)
 			} else {
-				logger.Printf("[%s] %s=%t\n", appName, "--fastsync", b)
-				err = shards.StoreSettingsValue(keys.gnomon.fastsync, []byte(arg))
-				if err != nil {
-					logger.Debugf("[%s] Storing fastsync: %s\n", appName, err)
-				}
+				gnomon.fastsync = b
 			}
 		}
 	}
 
-	if arg, ok := arguments["--num-parallel-blocks"]; ok {
-		if arg != "" {
-			if i, err := strconv.Atoi(arg); err != nil {
-				logger.Warnf("[%s] %s: %s\n", appName, "--num-parallel-blocks", err)
-			} else if i > 0 {
-				if i > maxParallelBlocks {
-					logger.Printf("[%s] Setting number of parallel blocks to maximum of %d\n", appName, maxParallelBlocks)
-					i = maxParallelBlocks
-				}
-
-				logger.Printf("[%s] %s=%d\n", appName, "--num-parallel-blocks", i)
-				err = shards.StoreSettingsValue(keys.gnomon.parallelBlocks, []byte(fmt.Sprintf("%d", i)))
-				if err != nil {
-					logger.Debugf("[%s] Storing number of parallel blocks: %s\n", appName, err)
-				}
+	if arg, ok := arguments["--num-parallel-blocks"]; ok && arg != "" {
+		if i, err := strconv.Atoi(arg); err != nil {
+			logger.Warnf("[%s] %s: %s\n", appName, "--num-parallel-blocks", err)
+		} else if i > 0 {
+			if i > maxParallelBlocks {
+				logger.Printf("[%s] Setting number of parallel blocks to maximum of %d\n", appName, maxParallelBlocks)
+				i = maxParallelBlocks
 			}
+
+			logger.Printf("[%s] %s=%d\n", appName, "--num-parallel-blocks", i)
+			err = shards.StoreSettingsValue(keys.gnomon.parallelBlocks, []byte(fmt.Sprintf("%d", i)))
+			if err != nil {
+				logger.Debugf("[%s] Storing number of parallel blocks: %s\n", appName, err)
+			}
+
+			gnomon.parallelBlocks = i
+		}
+	} else {
+		parallelBlocks, err := shards.GetSettingsValue(keys.gnomon.parallelBlocks)
+		if err != nil {
+			logger.Debugf("[%s] Getting number of parallel blocks: %s\n", appName, err)
+		} else {
+			if i, err := strconv.Atoi(string(parallelBlocks)); err != nil {
+				logger.Debugf("[%s] Setting number of parallel blocks: %s\n", appName, err)
+			} else {
+				gnomon.parallelBlocks = i
+			}
+		}
+	}
+
+	if !networkIsSet {
+		network, err := shards.GetNetwork()
+		if err != nil {
+			logger.Debugf("[%s] Getting network: %s\n", appName, err)
+		}
+
+		switch network {
+		case shards.Value.Network.Testnet():
+			globals.Arguments["--testnet"] = true
+			globals.Arguments["--simulator"] = false
+		case shards.Value.Network.Simulator():
+			globals.Arguments["--testnet"] = true
+			globals.Arguments["--simulator"] = true
+		default:
+			globals.Arguments["--testnet"] = false
+			globals.Arguments["--simulator"] = false
+		}
+	}
+
+	endpoint, err := shards.GetEndpoint()
+	if err != nil {
+		logger.Debugf("[%s] Getting endpoint: %s\n", appName, err)
+	} else {
+		t.endpoint = endpoint
+	}
+
+	pageSize, err := shards.GetSettingsValue(keys.pageSize)
+	if err != nil {
+		logger.Debugf("[%s] Getting page size: %s\n", appName, err)
+	} else {
+		if u, err := strconv.ParseUint(string(pageSize), 10, 64); err != nil {
+			logger.Debugf("[%s] Setting page size: %s\n", appName, err)
+		} else {
+			t.pageSize = int(u)
+		}
+	}
+
+	minLikes, err := shards.GetSettingsValue(keys.minLikes)
+	if err != nil {
+		logger.Debugf("[%s] Getting minimum likes: %s\n", appName, err)
+	} else {
+		if f, err := strconv.ParseFloat(string(minLikes), 64); err != nil {
+			logger.Debugf("[%s] Setting minimum likes: %s\n", appName, err)
+		} else {
+			t.minLikes = f
+		}
+	}
+
+	searchExclusions, err := shards.GetSettingsValue(keys.exclude)
+	if err != nil {
+		logger.Debugf("[%s] Getting search exclusions: %s\n", appName, err)
+	} else {
+		err = json.Unmarshal(searchExclusions, &t.exclusions)
+		if err != nil {
+			logger.Debugf("[%s] Setting search exclusions: %s\n", appName, err)
 		}
 	}
 
 	return
+}
+
+// Filter out specific readline inputs from input processing
+func filterInput(r rune) (rune, bool) {
+	switch r {
+	case readline.CharCtrlZ:
+		return r, false
+	}
+	return r, true
 }
 
 // Read errors for close from readline
@@ -174,6 +280,15 @@ func readError(err error) bool {
 	default:
 		return false
 	}
+}
+
+// Return network command information if Connect error is due to network settings
+func networkError(err error) error {
+	if strings.Contains(err.Error(), "Mainnet/TestNet") {
+		err = fmt.Errorf("invalid network settings, run command %q to change network settings", "endpoint <network>")
+	}
+
+	return err
 }
 
 // Get current network info, mainnet/testnet/simulator
@@ -191,6 +306,15 @@ func getNetworkInfo() (network string) {
 
 // No options for auto completer
 func completerNothing() (options []readline.PrefixCompleterInterface) {
+	return
+}
+
+// List of current search exclusions for auto completer
+func (t *tela_cli) completerSearchExclusions() (options []readline.PrefixCompleterInterface) {
+	for _, filter := range t.exclusions {
+		options = append(options, readline.PcItem(filter))
+	}
+
 	return
 }
 
@@ -230,6 +354,52 @@ func completerDocType() (options []readline.PrefixCompleterInterface) {
 	options = append(options, readline.PcItem("tela-css-1"))
 	options = append(options, readline.PcItem("tela-js-1"))
 	options = append(options, readline.PcItem("tela-md-1"))
+
+	return
+}
+
+// List of TELA-MOD tags for auto completer
+func completerMODs(prefix string) (options []readline.PrefixCompleterInterface) {
+	for _, m := range tela.Mods.GetAllMods() {
+		if prefix != "" {
+			if !strings.HasPrefix(m.Tag, prefix) {
+				continue
+			}
+		}
+
+		options = append(options, readline.PcItem(m.Tag))
+	}
+
+	return
+}
+
+// List of TELA-MODClass tags for auto completer
+func completerMODClasses() (options []readline.PrefixCompleterInterface) {
+	for _, c := range tela.Mods.GetAllClasses() {
+		options = append(options, readline.PcItem(c.Tag))
+	}
+
+	return
+}
+
+// List of smart contract function names for auto completer
+func completerSCFunctionNames(isOwner bool, sc dvm.SmartContract) (options []readline.PrefixCompleterInterface) {
+	var names []string
+	for name := range sc.Functions {
+		// Functions that don't need to be offered as options
+		if strings.ToLower(name) == name || name == "InitializePrivate" || name == "Initialize" || name == "UpdateCode" || name == "Rate" ||
+			(!isOwner && strings.HasPrefix(name, "Withdraw")) || (!isOwner && name == "TransferOwnership") || (!isOwner && name == "DeleteVar") {
+			continue
+		}
+
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	for _, n := range names {
+		options = append(options, readline.PcItem(n))
+	}
 
 	return
 }
@@ -285,77 +455,6 @@ func (t *tela_cli) connectEndpoint() (err error) {
 	}
 
 	return
-}
-
-// Get stored preferences
-func (t *tela_cli) getStoredPreferences() {
-	network, err := shards.GetNetwork()
-	if err != nil {
-		logger.Debugf("[%s] Getting network: %s\n", appName, err)
-	}
-
-	switch network {
-	case shards.Value.Network.Testnet():
-		globals.Arguments["--testnet"] = true
-		globals.Arguments["--simulator"] = false
-	case shards.Value.Network.Simulator():
-		globals.Arguments["--testnet"] = true
-		globals.Arguments["--simulator"] = true
-	default:
-		globals.Arguments["--testnet"] = false
-		globals.Arguments["--simulator"] = false
-	}
-
-	endpoint, err := shards.GetEndpoint()
-	if err != nil {
-		logger.Debugf("[%s] Getting endpoint: %s\n", appName, err)
-	} else {
-		t.endpoint = endpoint
-	}
-
-	pageSize, err := shards.GetSettingsValue(keys.pageSize)
-	if err != nil {
-		logger.Debugf("[%s] Getting page size: %s\n", appName, err)
-	} else {
-		if u, err := strconv.ParseUint(string(pageSize), 10, 64); err != nil {
-			logger.Debugf("[%s] Setting page size: %s\n", appName, err)
-		} else {
-			t.pageSize = int(u)
-		}
-	}
-
-	minLikes, err := shards.GetSettingsValue(keys.minLikes)
-	if err != nil {
-		logger.Debugf("[%s] Getting minimum likes: %s\n", appName, err)
-	} else {
-		if f, err := strconv.ParseFloat(string(minLikes), 64); err != nil {
-			logger.Debugf("[%s] Setting minimum likes: %s\n", appName, err)
-		} else {
-			t.minLikes = f
-		}
-	}
-
-	fastsync, err := shards.GetSettingsValue(keys.gnomon.fastsync)
-	if err != nil {
-		logger.Debugf("[%s] Getting fastsync: %s\n", appName, err)
-	} else {
-		if b, err := strconv.ParseBool(string(fastsync)); err != nil {
-			logger.Debugf("[%s] Setting fastsync: %s\n", appName, err)
-		} else {
-			gnomon.fastsync = b
-		}
-	}
-
-	parallelBlocks, err := shards.GetSettingsValue(keys.gnomon.parallelBlocks)
-	if err != nil {
-		logger.Debugf("[%s] Getting number of parallel blocks: %s\n", appName, err)
-	} else {
-		if i, err := strconv.Atoi(string(parallelBlocks)); err != nil {
-			logger.Debugf("[%s] Setting number of parallel blocks: %s\n", appName, err)
-		} else {
-			gnomon.parallelBlocks = i
-		}
-	}
 }
 
 // Open wallet file with password
@@ -460,6 +559,17 @@ func (t *tela_cli) formatPrompt(text string) string {
 	}
 
 	return fmt.Sprintf("%s %s » ", logger.Timestamp(), prompt)
+}
+
+// Check if the daemon connection is active and handle accordingly when disconnected
+func checkDaemonConnection() {
+	if walletapi.IsDaemonOnline() {
+		var result string
+		if err := walletapi.GetRPCClient().Call("DERO.Ping", nil, &result); err != nil {
+			stopGnomon()
+			walletapi.Connect(" ")
+		}
+	}
 }
 
 // Handle error signals inside read funcs before returning the error
@@ -690,7 +800,12 @@ func (t *tela_cli) indexPrompt(nameHdr string, previousIndex *tela.INDEX) (index
 
 	var scids, paths []string
 	for i := 0; i < int(total); {
-		line, err = t.readLine(fmt.Sprintf("Enter DOC%d SCID", i+1), "")
+		var lastSCID string
+		if previousIndex != nil && i < len(previousIndex.DOCs) {
+			lastSCID = previousIndex.DOCs[i]
+		}
+
+		line, err = t.readLine(fmt.Sprintf("Enter DOC%d SCID", i+1), lastSCID)
 		if err != nil {
 			return
 		}
@@ -709,8 +824,13 @@ func (t *tela_cli) indexPrompt(nameHdr string, previousIndex *tela.INDEX) (index
 				continue
 			}
 
-			if !strings.HasSuffix(ind.DURL, tela.TAG_LIBRARY) {
-				logger.Errorf("[%s] INDEX %s is not a library\n", appName, ind.DURL)
+			if i == 0 {
+				logger.Errorf("[%s] INDEX %s cannot be used as DOC1\n", appName, ind.DURL)
+				continue
+			}
+
+			if !strings.HasSuffix(ind.DURL, tela.TAG_LIBRARY) && !strings.Contains(ind.DURL, tela.TAG_DOC_SHARDS) {
+				logger.Errorf("[%s] INDEX %s is not a library or shards\n", appName, ind.DURL)
 				continue
 			}
 
@@ -727,7 +847,7 @@ func (t *tela_cli) indexPrompt(nameHdr string, previousIndex *tela.INDEX) (index
 				filePath := filepath.Join(doc.SubDir, doc.NameHdr)
 				for _, p := range paths {
 					if p == filePath {
-						indexErr = fmt.Sprintf("Import from %s INDEX already contains a DOC with path %q\n", d, filePath)
+						indexErr = fmt.Sprintf("Import from %s INDEX already contains a DOC with path %q", d, filePath)
 						break
 					}
 				}
@@ -770,15 +890,232 @@ func (t *tela_cli) indexPrompt(nameHdr string, previousIndex *tela.INDEX) (index
 		scids = append(scids, line)
 	}
 
+	scid := ""
+	var version *tela.Version
+	if previousIndex != nil {
+		version = previousIndex.SCVersion
+		scid = previousIndex.SCID
+	}
+
 	// Create TELA INDEX
 	index = tela.INDEX{
-		DURL: headers[tela.HEADER_DURL],
-		DOCs: scids,
+		SCVersion: version,
+		SCID:      scid,
+		DURL:      headers[tela.HEADER_DURL],
+		DOCs:      scids,
 		Headers: tela.Headers{
 			NameHdr:  nameHdr,
 			DescrHdr: headers[tela.HEADER_DESCRIPTION],
 			IconHdr:  headers[tela.HEADER_ICON_URL],
 		},
+	}
+
+	return
+}
+
+// Read inputs for setting TELA-MODs
+func (t *tela_cli) modsPrompt() (modTag string, err error) {
+	// Handle any TELA-MODs to be added
+	yes, err := t.readYesNo("Add SC TELA-MODs")
+	if err != nil {
+		return
+	}
+
+	if yes {
+		yes, err = t.readYesNo("Add variable store MOD")
+		if err != nil {
+			return
+		}
+
+		var modTags []string
+		allTelaMods := tela.Mods.GetAllMods()
+
+		if yes {
+			// Display MOD info
+			for i, m := range allTelaMods {
+				printMODInfo(m, false)
+				if i == tela.Mods.Index()[0]-1 {
+					break
+				}
+			}
+			fmt.Println(printDivider)
+
+			for len(modTags) < 1 {
+				var line string
+				completer := readline.NewPrefixCompleter(completerMODs("vs")...)
+				line, err = t.readLineWithCompleter("Enter a variable store MOD tag", "", completer)
+				if err != nil {
+					return
+				}
+
+				// Bypass the loop
+				if line == "none" || line == "" {
+					break
+				}
+
+				_, err = tela.Mods.TagsAreValid(line)
+				if err != nil {
+					logger.Errorf("[%s] Invalid MOD tag: %s\n", appName, err)
+					continue
+				}
+
+				if line != "" {
+					modTags = append(modTags, line)
+					logger.Printf("[%s] VS MOD: %q\n", appName, line)
+					break
+				}
+			}
+		}
+
+		yes, err = t.readYesNo("Add transfer MODs")
+		if err != nil {
+			return
+		}
+
+		if yes {
+			for i, m := range allTelaMods {
+				if i < tela.Mods.Index()[0] {
+					// Already did variable store mods
+					continue
+				}
+
+				printMODInfo(m, false)
+				if i == tela.Mods.Index()[1]-1 {
+					break
+				}
+			}
+			fmt.Println(printDivider)
+
+			startLen := len(modTags)
+
+			for len(modTags) <= startLen {
+				var line string
+				completer := readline.NewPrefixCompleter(completerMODs("tx")...)
+				line, err = t.readLineWithCompleter("Enter transfers MOD tags", "", completer)
+				if err != nil {
+					return
+				}
+
+				// Bypass the loop
+				if line == "none" || line == "" {
+					break
+				}
+
+				// Accepts two entry formats, space separator or comma separator
+				var split []string
+				if strings.Contains(line, ",") {
+					split = strings.Split(line, ",")
+				} else {
+					split = strings.Split(line, " ")
+				}
+
+				_, err = tela.Mods.TagsAreValid(tela.NewModTag(split))
+				if err != nil {
+					logger.Errorf("[%s] Invalid MOD tag: %s\n", appName, err)
+					continue
+				}
+
+				for _, s := range split {
+					tag := strings.TrimSpace(s)
+					if tag != "" {
+						modTags = append(modTags, tag)
+						logger.Printf("[%s] TX MOD: %q\n", appName, tag)
+					}
+				}
+			}
+		}
+
+		modTag = tela.NewModTag(modTags)
+		_, err = tela.Mods.TagsAreValid(modTag)
+		if err != nil {
+			modTag = ""
+			err = fmt.Errorf("invalid MOD tags: %s", err)
+			return
+		}
+
+		if modTag != "" {
+			logger.Printf("[%s] Adding MODs: %q\n", appName, modTag)
+		}
+	}
+
+	return
+}
+
+// Prompt for the information needed to execute TELA-MOD smart contract functions
+func (t *tela_cli) executeContractPrompt(scid, functionName string, sc dvm.SmartContract) (transfers []rpc.Transfer, args rpc.Arguments, err error) {
+	function, ok := sc.Functions[functionName]
+	if !ok {
+		err = fmt.Errorf("function %q does not exist", functionName)
+		return
+	}
+
+	_, destination := tela.GetDefaultNetworkAddress()
+	for _, line := range function.Lines {
+		if slices.Contains(line, "DEROVALUE") {
+			var derovalue uint64
+			derovalue, err = t.readUint64("Enter DEROVALUE")
+			if err != nil {
+				return
+			}
+
+			transfers = append(transfers, rpc.Transfer{Destination: destination, Amount: 0, Burn: derovalue})
+			break
+		} else if slices.Contains(line, "ASSETVALUE") {
+			var assetSCID string
+			assetSCID, err = t.readLine("Enter ASSET SCID", "")
+			if err != nil {
+				return
+			}
+
+			if len(assetSCID) != 64 {
+				err = fmt.Errorf("invalid ASSET SCID: %q", assetSCID)
+				return
+			}
+
+			var assetvalue uint64
+			assetvalue, err = t.readUint64("Enter ASSETVALUE")
+			if err != nil {
+				return
+			}
+
+			transfers = append(transfers, rpc.Transfer{Destination: destination, SCID: crypto.HashHexToHash(assetSCID), Amount: 0, Burn: assetvalue})
+			break
+		}
+	}
+
+	// tela.Transfer would do this anyways but cli should display a transfer for the user instead of nil
+	if len(transfers) < 1 {
+		transfers = []rpc.Transfer{{Destination: destination, Amount: 0}}
+	}
+
+	args = rpc.Arguments{
+		rpc.Argument{Name: "entrypoint", DataType: rpc.DataString, Value: functionName},
+		rpc.Argument{Name: rpc.SCID, DataType: rpc.DataHash, Value: crypto.HashHexToHash(scid)},
+		rpc.Argument{Name: rpc.SCACTION, DataType: rpc.DataUint64, Value: uint64(rpc.SC_CALL)},
+	}
+
+	for _, p := range function.Params {
+		switch p.Type {
+		case dvm.String:
+			var sParam string
+			sParam, err = t.readLine(fmt.Sprintf("Enter %q param string value", p.Name), "")
+			if err != nil {
+				return
+			}
+
+			args = append(args, rpc.Argument{Name: p.Name, DataType: rpc.DataString, Value: sParam})
+		case dvm.Uint64:
+			var uParam uint64
+			uParam, err = t.readUint64(fmt.Sprintf("Enter %q param uint64 value", p.Name))
+			if err != nil {
+				return
+			}
+
+			args = append(args, rpc.Argument{Name: p.Name, DataType: rpc.DataUint64, Value: uParam})
+		default:
+			err = fmt.Errorf("found unknown param type: %s %v", p.Name, p.Type)
+			return
+		}
 	}
 
 	return
@@ -874,14 +1211,16 @@ func (t *tela_cli) getServerInfo() (telas []tela.ServerInfo, total int, local bo
 
 // Get TELA-CLI app info
 func (t *tela_cli) getCLIInfo() (allInfo []string) {
-	margin := "------------------------------"
-	allInfo = append(allInfo, margin)
+	allInfo = append(allInfo, printDivider)
 
 	allInfo = append(allInfo, fmt.Sprintf("OS: %s", t.os))
 	walletName := "offline"
 	if t.wallet.disk != nil {
 		walletName = t.wallet.name
 	}
+
+	allInfo = append(allInfo, fmt.Sprintf("DOC: v%s", tela.GetLatestContractVersion(true).String()))
+	allInfo = append(allInfo, fmt.Sprintf("INDEX: v%s", tela.GetLatestContractVersion(false).String()))
 
 	allInfo = append(allInfo, fmt.Sprintf("Wallet: %s", filepath.Base(walletName)))
 	allInfo = append(allInfo, fmt.Sprintf("Network: %s", strings.ToLower(getNetworkInfo())))
@@ -906,19 +1245,19 @@ func (t *tela_cli) getCLIInfo() (allInfo []string) {
 
 	allInfo = append(allInfo, fmt.Sprintf("Page size: %d", t.pageSize))
 	allInfo = append(allInfo, fmt.Sprintf("Port start: %d", tela.PortStart()))
+	allInfo = append(allInfo, fmt.Sprintf("Available MODs: %d", len(tela.Mods.GetAllMods())))
 
 	_, servers, local := t.getServerInfo()
 	allInfo = append(allInfo, fmt.Sprintf("Active servers: %d/%d", servers, tela.MaxServers()+1))
 	if servers > 0 {
 		allInfo = append(allInfo, fmt.Sprintf("Local server running: %t", local))
-
 	}
 
 	allInfo = append(allInfo, fmt.Sprintf("Search minimum likes: %.0f%%", t.minLikes))
 	allInfo = append(allInfo, fmt.Sprintf("Open content in browser: %t", t.openInBrowser))
 	allInfo = append(allInfo, fmt.Sprintf("Updated content allowed: %t", tela.UpdatesAllowed()))
 
-	allInfo = append(allInfo, margin)
+	allInfo = append(allInfo, printDivider)
 
 	return
 }
@@ -948,6 +1287,14 @@ func (t *tela_cli) getLikesRatio(scid string, required bool) (dURL string, ratio
 		return
 	}
 
+	dURL = d[0]
+	for _, filter := range t.exclusions {
+		if strings.Contains(dURL, filter) {
+			err = fmt.Errorf("found dURL exclusion filter %q in %s", filter, scid)
+			return
+		}
+	}
+
 	_, up := gnomon.GetSCIDValuesByKey(scid, "likes")
 	if up == nil {
 		err = fmt.Errorf("could not get %s likes", scid)
@@ -959,8 +1306,6 @@ func (t *tela_cli) getLikesRatio(scid string, required bool) (dURL string, ratio
 		err = fmt.Errorf("could not get %s dislikes", scid)
 		return
 	}
-
-	dURL = d[0]
 
 	total := float64(up[0] + down[0])
 	if total == 0 {
@@ -1016,6 +1361,7 @@ func (t *tela_cli) paging(resultLines [][]string) (err error) {
 			}
 
 			display = display + t.pageSize
+			fmt.Println(searchDivider)
 		}
 
 		if isPaged && end {
@@ -1072,7 +1418,7 @@ func parseBASInfo(scid, owner string) (lines []string) {
 }
 
 // Parse INDEX info from search queries and return resulting lines to print
-func parseINDEXInfo(scid, owner, dURL string, ratio float64) (lines []string) {
+func parseINDEXInfo(scid, owner, dURL, modTag string, ratio float64) (lines []string) {
 	nameHdr, _ := gnomon.GetSCIDValuesByKey(scid, "nameHdr")
 	if nameHdr == nil {
 		nameHdr = append(nameHdr, "?")
@@ -1080,6 +1426,9 @@ func parseINDEXInfo(scid, owner, dURL string, ratio float64) (lines []string) {
 
 	lines = append(lines, fmt.Sprintf("%sdURL:%s %-65s Author: %s", logger.Color.Grey(), logger.Color.End(), dURL, owner))
 	lines = append(lines, fmt.Sprintf("SCID: %s  Type: %-16s  Name: %-33s  Likes: %s", scid, "TELA-INDEX-1", nameHdr[0], colorLikesRatio(ratio)))
+	if modTag != "" {
+		lines = append(lines, fmt.Sprintf("MODs: %s", modTag))
+	}
 
 	return
 }
@@ -1090,7 +1439,8 @@ func (t *tela_cli) searchINDEXInfo(all map[string]string, owned bool) (resultLin
 		return
 	}
 
-	for sc, owner := range all {
+	for sc := range all {
+		owner := gnomon.GetOwnerAddress(sc)
 		if owned && owner != t.wallet.disk.GetAddress().String() {
 			continue
 		}
@@ -1100,9 +1450,15 @@ func (t *tela_cli) searchINDEXInfo(all map[string]string, owned bool) (resultLin
 			continue
 		}
 
+		var modTag string
+		mods, _ := gnomon.GetSCIDValuesByKey(sc, "mods")
+		if mods != nil {
+			modTag = mods[0]
+		}
+
 		ind, _ := gnomon.GetSCIDValuesByKey(sc, "DOC1")
 		if ind != nil {
-			resultLines = append(resultLines, parseINDEXInfo(sc, owner, dURL, likesRatio))
+			resultLines = append(resultLines, parseINDEXInfo(sc, owner, dURL, modTag, likesRatio))
 		}
 	}
 
@@ -1130,7 +1486,8 @@ func (t *tela_cli) searchDOCInfo(all map[string]string, owned bool, args ...stri
 
 	if len(args) > 1 {
 		// docType search
-		for sc, owner := range all {
+		for sc := range all {
+			owner := gnomon.GetOwnerAddress(sc)
 			if owned && owner != t.wallet.disk.GetAddress().String() {
 				continue
 			}
@@ -1149,7 +1506,8 @@ func (t *tela_cli) searchDOCInfo(all map[string]string, owned bool, args ...stri
 		}
 	} else {
 		// search all DOCs
-		for sc, owner := range all {
+		for sc := range all {
+			owner := gnomon.GetOwnerAddress(sc)
 			if owned && owner != t.wallet.disk.GetAddress().String() {
 				continue
 			}
@@ -1205,11 +1563,13 @@ func (t *tela_cli) getLibraries() (libKeys []tela.Library, libMap map[tela.Libra
 	}
 
 	libMap = map[tela.Library][]ratioDOC{}
-	for sc, owner := range all {
+	for sc := range all {
 		dURL, likesRatio, err := t.getLikesRatio(sc, true)
 		if err != nil {
 			continue
 		}
+
+		owner := gnomon.GetOwnerAddress(sc)
 
 		if strings.HasSuffix(dURL, tela.TAG_LIBRARY) {
 			tLib := tela.Library{DURL: dURL, Author: owner}
@@ -1271,10 +1631,276 @@ func parseLibraryInfo(lib tela.Library, docs map[tela.Library][]ratioDOC) (lines
 func parseSearchQuery(scid, owner, dURL string, ratio float64) (lines []string) {
 	scType := getSCType(scid)
 	if scType == "TELA-INDEX-1" {
-		return parseINDEXInfo(scid, owner, dURL, ratio)
+		var modTag string
+		mods, _ := gnomon.GetSCIDValuesByKey(scid, "mods")
+		if mods != nil {
+			modTag = mods[0]
+		}
+
+		return parseINDEXInfo(scid, owner, dURL, modTag, ratio)
 	} else if strings.Contains(scType, "TELA-") {
 		return parseDOCInfo(scid, owner, scType, dURL, ratio)
 	} else {
 		return parseBASInfo(scid, owner)
 	}
+}
+
+// Prints info for the given TELA-MOD
+func printMODInfo(mod tela.MOD, printCode bool) {
+	fmt.Println(printDivider)
+	fmt.Printf("%sClass:%s %s\n", logger.Color.Grey(), logger.Color.End(), tela.Mods.GetClass(mod.Tag).Name)
+	fmt.Printf("%sName:%s %s\n", logger.Color.Grey(), logger.Color.End(), mod.Name)
+	fmt.Printf("%sTag:%s %s\n", logger.Color.Grey(), logger.Color.End(), mod.Tag)
+	fmt.Printf("%sDescription:%s %s\n", logger.Color.Grey(), logger.Color.End(), mod.Description)
+	if printCode {
+		fmt.Println()
+		fmt.Println(mod.FunctionCode())
+	}
+}
+
+// Prints info for the given TELA-MODClass
+func printMODClassInfo(class tela.MODClass) {
+	fmt.Println(printDivider)
+	fmt.Printf("%sClass Name:%s %s\n", logger.Color.Grey(), logger.Color.End(), class.Name)
+	fmt.Printf("%sTag:%s %s\n", logger.Color.Grey(), logger.Color.End(), class.Tag)
+	for i, r := range class.Rules {
+		if i == 0 {
+			fmt.Printf("%sRules:%s\n", logger.Color.Grey(), logger.Color.End())
+		}
+		fmt.Printf("#%d: %s - %s\n", i+1, r.Name, r.Description)
+	}
+}
+
+// Print file information
+func printFileInfo(info fs.FileInfo) {
+	fmt.Printf("%sName:%s %s\n", logger.Color.Cyan(), logger.Color.End(), info.Name())
+	fmt.Printf("%sSize:%s %0.2f KB\n", logger.Color.Cyan(), logger.Color.End(), float64(info.Size())/1000)
+	fmt.Printf("%sDocType:%s %s\n", logger.Color.Cyan(), logger.Color.End(), tela.ParseDocType(info.Name()))
+	fmt.Printf("%sModified:%s %s\n", logger.Color.Cyan(), logger.Color.End(), info.ModTime().Format("01/02/2006 15:04:05"))
+	fmt.Printf("%sDirectory:%s %t\n", logger.Color.Cyan(), logger.Color.End(), info.IsDir())
+}
+
+// Find all DocShard files associated with the given filePath
+func findDocShardFiles(filePath string) (docShards [][]byte, recreate string, err error) {
+	fileName := filepath.Base(filePath)
+	split := strings.Split(fileName, "-")
+	if len(split) < 2 {
+		err = fmt.Errorf("%q is not a DocShard file", filePath)
+		return
+	}
+
+	fileDir := filepath.Dir(filePath)
+	ext := filepath.Ext(fileName)
+
+	prefix := fmt.Sprintf("%s-", split[0])
+
+	files, err := os.ReadDir(fileDir)
+	if err != nil {
+		return
+	}
+
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		shardFileName := file.Name()
+		if strings.HasPrefix(shardFileName, prefix) && filepath.Ext(shardFileName) == ext {
+			shardFilePath := filepath.Join(fileDir, shardFileName)
+			shard, errr := os.ReadFile(shardFilePath)
+			if errr != nil {
+				err = fmt.Errorf("could not read DocShard file %q", shardFilePath)
+				return
+			}
+
+			docShards = append(docShards, shard)
+		}
+	}
+
+	recreate = fmt.Sprintf("%s%s", split[0], ext)
+
+	return
+}
+
+// Clone a repo with Git HTTPS, it will return error if Git executable cannot be found in the system's $PATH.
+// The repo format follows go convention, github.com/civilware/tela and will accept branches with github.com/civilware/tela@branch
+func gitClone(repo string) (err error) {
+	expectedFormat := "domain/user/repo"
+	if strings.HasPrefix(repo, "https://") || strings.HasSuffix(repo, ".git") {
+		err = fmt.Errorf("expecting URL format %q or %q", expectedFormat, fmt.Sprintf("%s@branch", expectedFormat))
+		return
+	}
+
+	parts := strings.Split(repo, "@")
+	source := parts[0]
+
+	split := strings.Split(source, "/")
+	if len(split) < 3 {
+		err = fmt.Errorf("invalid URL format, expecting %q", expectedFormat)
+		return
+	}
+
+	for _, part := range split {
+		if part == "" {
+			err = fmt.Errorf("invalid URL %q", source)
+			return
+		}
+	}
+
+	_, err = exec.LookPath("git")
+	if err != nil {
+		return
+	}
+
+	url := fmt.Sprintf("https://%s.git", source)
+	path := filepath.Join(tela.GetClonePath(), filepath.Base(source))
+
+	args := []string{"clone", url, path}
+	if len(parts) > 1 {
+		args = append(args, "-b", parts[1])
+	}
+
+	cmd := exec.Command("git", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
+// Get the contents of two files and prepare for diff
+func getFileDiff(file1, file2 string) (diff []string, fileNames []string, err error) {
+	fileNames = []string{file1, file2}
+	for _, fileName := range fileNames {
+		var file []byte
+		file, err = os.ReadFile(fileName)
+		if err != nil {
+			err = fmt.Errorf("read file %s: %s", fileName, err)
+			return
+		}
+
+		content := string(file)
+		for _, r := range content {
+			if r > unicode.MaxASCII {
+				err = fmt.Errorf("cannot diff file %s: '%c'", fileName, r)
+				return
+			}
+		}
+
+		diff = append(diff, content)
+	}
+
+	return
+}
+
+// Print the line diffs between two sources
+func (t *tela_cli) printDiff(diff []string, names []string) (err error) {
+	if len(diff) < 2 || len(names) < 2 {
+		err = fmt.Errorf("invalid diff format")
+		return
+	}
+
+	var lines [][]string
+	lines = append(lines, strings.Split(diff[0], "\n"))
+	lines = append(lines, strings.Split(diff[1], "\n"))
+
+	lines1Len := len(lines[0])
+	lines2Len := len(lines[1])
+
+	var l1, l2 int
+	var context bool
+	var diffLines []string
+
+	for l1 < lines1Len && l2 < lines2Len {
+		if lines[0][l1] == lines[1][l2] {
+			l1++
+			l2++
+			if context {
+				lastLineIndex := len(diffLines) - 1
+				diffLines[lastLineIndex] = fmt.Sprintf("%s\n", diffLines[lastLineIndex])
+				context = false
+			}
+		} else {
+			// Line diffs to print
+			rmv := fmt.Sprintf("%d %s- %s%s", l1+1, logger.Color.Red(), lines[0][l1], logger.Color.End())
+			add := fmt.Sprintf("%s%d%s %s+ %s%s", logger.Color.Grey(), l2+1, logger.Color.End(), logger.Color.Green(), lines[1][l2], logger.Color.End())
+			diffLines = append(diffLines, fmt.Sprintf("%s\n%s", rmv, add))
+
+			l1++
+			l2++
+			if l1 >= lines1Len {
+				continue
+			}
+
+			// Rest of file is the same
+			l1Index := strings.Index(diff[0], lines[0][l1])
+			l2Index := strings.Index(diff[1], lines[0][l1])
+			if l1Index != -1 && l2Index != -1 {
+				if diff[0][l1Index:] == diff[1][l2Index:] {
+					l1 = lines1Len
+					if lines2Len <= lines1Len {
+						l2 = lines2Len
+					}
+					l2++
+					break
+				}
+			}
+
+			context = true
+		}
+	}
+
+	// Get the remaining lines from file1 if removed
+	for l1 < lines1Len {
+		rmv := fmt.Sprintf("%d %s- %s%s", l1+1, logger.Color.Red(), lines[0][l1], logger.Color.End())
+		l1++
+		diffLines = append(diffLines, rmv)
+	}
+
+	// Get the remaining lines from file2 if added
+	for l2 < lines2Len {
+		add := fmt.Sprintf("%d %s+ %s%s", l2+1, logger.Color.Green(), lines[1][l2], logger.Color.End())
+		l2++
+		diffLines = append(diffLines, add)
+	}
+
+	diffLinesLen := len(diffLines)
+	display := t.pageSize - 1
+
+	isPaged := false
+	if diffLinesLen > t.pageSize {
+		isPaged = true
+		logger.Printf("[%s] Showing %d of %d diffs\n", appName, t.pageSize, diffLinesLen)
+	}
+
+	if len(diffLines) > 0 {
+		fmt.Printf("--- a/%s\n+++ b/%s\n", names[0], names[1])
+	} else {
+		logger.Printf("No diffs found\n")
+		return
+	}
+
+	for printed, p := range diffLines {
+		fmt.Println(p)
+
+		end := printed == diffLinesLen-1
+		if printed >= display && !end {
+			var yes bool
+			yes, err = t.readYesNo(fmt.Sprintf("Show more? (%d)", (diffLinesLen-1)-printed))
+			if err != nil {
+				return
+			}
+
+			if !yes {
+				break
+			}
+
+			display = display + t.pageSize
+		}
+
+		if isPaged && end {
+			logger.Printf("[%s] End of diffs\n", appName)
+		}
+	}
+
+	return
 }

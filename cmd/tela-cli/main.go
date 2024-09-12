@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -31,6 +33,7 @@ type tela_cli struct {
 	shutdown      func()
 	endpoint      string
 	os            string
+	exclusions    []string
 	pageSize      int
 	minLikes      float64
 	openInBrowser bool
@@ -58,8 +61,9 @@ Usage:
 Options:
   -h --help     Show this screen
   --debug       Enable debug mode
-  --testnet     Enable wallet testnet flag
-  --simulator   Enable wallet simulator flag
+  --mainnet     Set the network to mainnet
+  --testnet     Set the network to testnet
+  --simulator   Set the network to simulator
 
   --db-type=<gravdb>           Set DB type to use for preferences and encrypted storage, either gravdb or boltdb
   --wallet=<file.db>           Open a DERO wallet file
@@ -86,9 +90,16 @@ endpoint remote              - Set the network to mainnet and daemon endpoint to
 endpoint close               - Close connection with current daemon endpoint
 
 clone <scid>                 - Clone TELA content from SCID
+clone <scid>@<txid>          - Clone TELA content from SCID at commit TXID if the TX data is available from the daemon
 
 mv <source> <destination>    - Move a file or directory
 rm <source>                  - Remove a file or directory, it will only remove from within the datashards/clone directory
+
+file-info <source>           - Get source file information
+file-shard <source>          - Take a source file and create DocShards files intended to be embedded in an INDEX and recreated as source when served
+file-construct <source>      - Take a DocShard file and construct the original source file using the matching DocShards in the directory
+file-diff <source> <compare> - View the line differences between a source and comparison file
+scid-diff <scid1> <scid2>    - View the line differences between two smart contracts
 
 serve <scid>                 - Serve TELA content from SCID
 serve local <directory>      - Serve content from local directory, useful for testing TELA content pre install
@@ -107,31 +118,49 @@ colors <true>                - Set colors true/false to enable terminal colors
 
 wallet <file.db>             - Open a DERO wallet file at path
 wallet close                 - Close wallet file if active 
+balance                      - View the connected wallet's balances
 
 rate <scid>                  - Rate a TELA smart contract
 install-doc <file.html>      - Start guided TELA-DOC smart contract install
 install-index <name>         - Start guided TELA-INDEX smart contract install
 update-index <scid>          - Start guided TELA-INDEX smart contract update
 
+mods                         - Print all available TELA-MOD info
+mods <class>                 - Print available info on a TELA-MODClass
+mod-info <tag>               - Print info on a TELA-MOD by its tag
+
+set-var <scid>               - Set a key/value store on a SCID
+delete-var <scid>            - Delete a key/value store on a SCID, this is a owners only function
+sc-execute <function>        - Execute a TELA-MOD smart contract function
+
 gnomon start                 - Start Gnomon indexer
 gnomon stop                  - Stop Gnomon indexer
 gnomon resync                - Stop Gnomon indexer if running, delete Gnomon DB for current network and restart Gnomon indexer
+gnomon add <scid>            - Add TELA SCID(s) to the local Gnomon DB
 gnomon clean <network>       - Delete Gnomon indexer DB for network
 
 search all                   - Search all TELA SCIDs in Gnomon DB
+search key <key>             - Search all TELA SCIDs in Gnomon DB that contain a key store
+search value <value>         - Search all TELA SCIDs in Gnomon DB that contain a value store
 search scid <scid>           - Search by SCID
+search scid vars <scid>      - Search all variables stored in a SCID
 search docs                  - Search all TELA DOCs
 search docs <docType>        - Search TELA DOCs by type
 search indexes               - Search all TELA INDEXs
 search libs                  - Search all dURLs tagged as libraries
 search durl <dURL>           - Search by dURL
-search code <scid>           - Search for SC code by SCID 
+search code <scid>           - Search for SC code by SCID
+search line <line>           - Search for a line of code in all SCs
 search author <address>      - Search by author address
 search min-likes <30>        - Sets the minimum likes % required to be a valid search result, 0 will not filter any content
 search ratings <scid>        - Search ratings for a SCID, <height> can be added to filter results (min-likes will not apply to rating search results)
 search my docs               - Search all DOCs installed for connected wallet (min-likes will not apply to any of the my search results)
 search my docs <docType>     - Search all Docs by type for connected wallet
 search my indexes            - Search all INDEXs for connected wallet
+search exclude view          - View all current search exclusions
+search exclude clear         - Clear all current search exclusions
+search exclude add <text>    - Add a filter to exclude SCIDs containing <text> in their dURL
+search exclude remove <text> - Remove a specific search exclusion
 ----------------`
 
 func main() {
@@ -145,13 +174,28 @@ func main() {
 		readline.PcItem("endpoint",
 			completerNetworks(true)...,
 		),
-		readline.PcItem("clone"),
+		readline.PcItem("clone",
+			readline.PcItem("github.com/"),
+		),
 		readline.PcItem("mv",
 			completerFiles(".", completerFiles(".")),
 		),
 		readline.PcItem("rm",
 			completerFiles(filepath.Join(filepath.Base(shards.GetPath()), "clone")),
 		),
+		readline.PcItem("file-info",
+			completerFiles("."),
+		),
+		readline.PcItem("file-shard",
+			completerFiles("."),
+		),
+		readline.PcItem("file-construct",
+			completerFiles("."),
+		),
+		readline.PcItem("file-diff",
+			completerFiles(".", completerFiles(".")),
+		),
+		readline.PcItem("scid-diff"),
 		readline.PcItem("serve",
 			readline.PcItem("local",
 				completerFiles("."),
@@ -182,21 +226,38 @@ func main() {
 			readline.PcItem("close"),
 			completerFiles("."),
 		),
+		readline.PcItem("balance"),
 		readline.PcItem("rate"),
-		readline.PcItem("install-doc", completerFiles(".")),
+		readline.PcItem("install-doc",
+			completerFiles("."),
+		),
 		readline.PcItem("install-index"),
 		readline.PcItem("update-index"),
+		readline.PcItem("mods",
+			completerMODClasses()...,
+		),
+		readline.PcItem("mod-info",
+			completerMODs("")...,
+		),
+		readline.PcItem("set-var"),
+		readline.PcItem("delete-var"),
+		readline.PcItem("sc-execute"),
 		readline.PcItem("gnomon",
 			readline.PcItem("start"),
 			readline.PcItem("stop"),
 			readline.PcItem("resync"),
+			readline.PcItem("add"),
 			readline.PcItem("clean",
 				completerNetworks(false)...,
 			),
 		),
 		readline.PcItem("search",
 			readline.PcItem("all"),
-			readline.PcItem("scid"),
+			readline.PcItem("key"),
+			readline.PcItem("value"),
+			readline.PcItem("scid",
+				readline.PcItem("vars"),
+			),
 			readline.PcItem("docs",
 				completerDocType()...,
 			),
@@ -204,6 +265,7 @@ func main() {
 			readline.PcItem("libs"),
 			readline.PcItem("durl"),
 			readline.PcItem("code"),
+			readline.PcItem("line"),
 			readline.PcItem("author"),
 			readline.PcItem("min-likes"),
 			readline.PcItem("ratings"),
@@ -213,15 +275,22 @@ func main() {
 				),
 				readline.PcItem("indexes"),
 			),
+			readline.PcItem("exclude",
+				readline.PcItem("view"),
+				readline.PcItem("clear"),
+				readline.PcItem("add"),
+				readline.PcItem("remove"),
+			),
 		),
 	)
 
 	// Readline config
 	rlConfig := &readline.Config{
-		EOFPrompt:         "back",
-		InterruptPrompt:   "^C",
-		HistorySearchFold: true,
-		AutoComplete:      completer,
+		EOFPrompt:           "back",
+		InterruptPrompt:     "^C",
+		HistorySearchFold:   true,
+		AutoComplete:        completer,
+		FuncFilterInputRune: filterInput,
 	}
 
 	// Initialize readline for TELA-CLI app
@@ -251,6 +320,7 @@ func main() {
 		app.closeWallet()
 		app.Wait()
 		logger.Printf("[%s] Closed\n", appName)
+		os.Exit(0)
 	}
 
 	// Gnomon defaults
@@ -259,15 +329,14 @@ func main() {
 
 	logger.Printf("[%s] Run %q for list of commands\n", appName, "help")
 
-	// Parse start args
-	args := parseFlags()
-	app.getStoredPreferences()
+	// Parse start flags and set stored preferences
+	flags := app.parseFlags()
 
 	// Initialize DERO network config
 	globals.InitNetwork()
 
 	// Set daemon endpoint if provided and connect
-	if endpoint, ok := args["--daemon"]; ok {
+	if endpoint, ok := flags["--daemon"]; ok {
 		if endpoint != "" { // no arg will connect to existing stored endpoint without overwriting it
 			app.endpoint = endpoint
 			logger.Printf("[%s] %s=%s\n", appName, "--daemon", app.endpoint)
@@ -275,11 +344,11 @@ func main() {
 
 		err = app.connectEndpoint()
 		if err != nil {
-			logger.Errorf("[%s] Connect: %s\n", appName, err)
+			logger.Errorf("[%s] Connect: %s\n", appName, networkError(err))
 		} else {
 			logger.Printf("[%s] Connected: %s\n", appName, app.endpoint)
 			// Daemon is connected, start Gnomon if requested
-			if _, ok := args["--gnomon"]; ok {
+			if _, ok := flags["--gnomon"]; ok {
 				startGnomon(app.endpoint)
 				// Wait here until Gnomon is synced, force fast sync will trigger when LastIndexedHeight < (Chain height - ForceFastSyncDiff)
 				for gnomon.Indexer != nil {
@@ -294,10 +363,10 @@ func main() {
 	}
 
 	// Open a wallet file, prompting for password if not provided
-	if file, ok := args["--wallet"]; ok {
+	if file, ok := flags["--wallet"]; ok {
 		if file != "" {
 			password := ""
-			if p, ok := args["--password"]; ok {
+			if p, ok := flags["--password"]; ok {
 				password = p
 			}
 
@@ -307,7 +376,7 @@ func main() {
 					return
 				}
 
-				logger.Errorf("[%s] Opening wallet: %s\n", appName, err)
+				logger.Errorf("[%s] Opening wallet: %s\n", appName, networkError(err))
 			}
 		}
 	}
@@ -316,17 +385,23 @@ func main() {
 
 	// Refresh readline
 	go func() {
+		ticker := time.NewTicker(time.Second * 5)
+		defer ticker.Stop()
 		defer app.Done()
 		for {
 			select {
 			case <-app.ctx.Done():
 				return
 			case <-time.After(time.Second):
-				if !app.wait {
-					app.Lock()
-					app.setPrompt("")
-					app.Unlock()
-				}
+				// Refresh the prompt
+			case <-ticker.C:
+				checkDaemonConnection()
+			}
+
+			if !app.wait {
+				app.Lock()
+				app.setPrompt("")
+				app.Unlock()
 			}
 		}
 	}()
@@ -387,25 +462,42 @@ func main() {
 
 			walletapi.Connected = false
 
+			// Get the current network to see if it will be switched
+			gnomonStopped := false
+			currentNetwork := strings.ToLower(getNetworkInfo())
+
 			// Default network addresses
 			switch args[0] {
 			case "mainnet":
+				if currentNetwork != args[0] {
+					gnomonStopped = stopGnomon()
+				}
 				app.endpoint = "127.0.0.1:10102"
 				globals.Arguments["--testnet"] = false
 				globals.Arguments["--simulator"] = false
 			case "testnet":
+				if currentNetwork != args[0] {
+					gnomonStopped = stopGnomon()
+				}
 				app.endpoint = "127.0.0.1:40402"
 				globals.Arguments["--testnet"] = true
 				globals.Arguments["--simulator"] = false
 			case "simulator":
+				if currentNetwork != args[0] {
+					gnomonStopped = stopGnomon()
+				}
 				app.endpoint = "127.0.0.1:20000"
 				globals.Arguments["--testnet"] = true
 				globals.Arguments["--simulator"] = true
 			case "remote":
+				if currentNetwork != "mainnet" {
+					gnomonStopped = stopGnomon()
+				}
 				app.endpoint = "node.derofoundation.org:11012"
 				globals.Arguments["--testnet"] = false
 				globals.Arguments["--simulator"] = false
 			case "close":
+				stopGnomon()
 				globals.Arguments["--testnet"] = false
 				globals.Arguments["--simulator"] = false
 				globals.InitNetwork()
@@ -423,13 +515,33 @@ func main() {
 
 			err = app.connectEndpoint()
 			if err != nil {
+				walletapi.Connect(" ")
 				walletapi.Daemon_Endpoint_Active = ""
-				logger.Errorf("[%s] Endpoint %s: %s\n", appName, app.endpoint, err)
+				logger.Errorf("[%s] Endpoint %s: %s\n", appName, app.endpoint, networkError(err))
+				stopGnomon()
+
 				continue
 			}
 
 			logger.Printf("[%s] Endpoint set to: %s\n", appName, app.endpoint)
+			if gnomonStopped {
+				startGnomon(app.endpoint)
+				if gnomon.Indexer != nil {
+					time.Sleep(time.Second * 5)
+				}
+			}
 		case "clone":
+			// Git clone
+			if args != nil && strings.Contains(args[0], "/") {
+				err := gitClone(args[0])
+				if err != nil {
+					logger.Errorf("[%s] Git clone: %s\n", appName, err)
+				}
+
+				continue
+			}
+
+			// TELA clone
 			if !walletapi.IsDaemonOnline() {
 				logger.Errorf("[%s] Daemon %s not online to clone\n", appName, app.endpoint)
 				continue
@@ -545,7 +657,7 @@ func main() {
 
 			args[0] = filepath.Clean(args[0])
 			if !strings.Contains(args[0], cloneDir) || args[0] == cloneDir {
-				logger.Warnf("[%s] Remove will only target files within datashard/clone\n", appName)
+				logger.Warnf("[%s] Remove will only target files within %s\n", appName, cloneDir)
 				continue
 			}
 
@@ -568,6 +680,274 @@ func main() {
 
 			os.RemoveAll(args[0])
 			logger.Printf("[%s] %s deleted\n", appName, args[0])
+		case "file-info":
+			if args == nil {
+				completer := readline.NewPrefixCompleter(completerFiles("."))
+				line, err := app.readLineWithCompleter("Enter source", "", completer)
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = []string{line}
+			}
+
+			args[0] = filepath.Clean(args[0])
+
+			var fileInfo fs.FileInfo
+			if fileInfo, err = os.Stat(args[0]); err != nil {
+				if os.IsNotExist(err) {
+					logger.Errorf("[%s] %q does not exists\n", appName, args[0])
+				} else {
+					logger.Errorf("[%s] Could not access file: %s\n", appName, err)
+				}
+
+				continue
+			}
+
+			printFileInfo(fileInfo)
+		case "file-shard":
+			if args == nil {
+				completer := readline.NewPrefixCompleter(completerFiles("."))
+				line, err := app.readLineWithCompleter("Enter source", "", completer)
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = []string{line}
+			}
+
+			args[0] = filepath.Clean(args[0])
+
+			var fileInfo fs.FileInfo
+			if fileInfo, err = os.Stat(args[0]); err != nil {
+				if os.IsNotExist(err) {
+					logger.Errorf("[%s] %q does not exists\n", appName, args[0])
+				} else {
+					logger.Errorf("[%s] Could not access file: %s\n", appName, err)
+				}
+
+				continue
+			}
+
+			if fileInfo.IsDir() {
+				logger.Errorf("[%s] %q is a directory\n", appName, args[0])
+				continue
+			}
+
+			totalChunks := (fileInfo.Size() + CHUNK_SIZE - 1) / CHUNK_SIZE
+			if totalChunks < 2 {
+				logger.Errorf("[%s] %q is smaller than chunk size\n", appName, args[0])
+				continue
+			}
+
+			yes, err := app.readYesNo(fmt.Sprintf("Shard %s%s%s (%d)", logger.Color.Green(), args[0], logger.Color.End(), totalChunks))
+			if err != nil {
+				if readError(err) {
+					return
+				}
+				continue
+			}
+
+			if !yes {
+				continue
+			}
+
+			err = tela.CreateShardFiles(args[0])
+			if err != nil {
+				logger.Errorf("[%s] Shard: %s\n", appName, err)
+				continue
+			}
+
+			logger.Printf("[%s] Shards created successfully\n", appName)
+		case "file-construct":
+			if args == nil {
+				completer := readline.NewPrefixCompleter(completerFiles("."))
+				line, err := app.readLineWithCompleter("Enter source", "", completer)
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = []string{line}
+			}
+
+			args[0] = filepath.Clean(args[0])
+			if _, err = os.Stat(args[0]); os.IsNotExist(err) {
+				logger.Errorf("[%s] %q does not exists\n", appName, args[0])
+				continue
+			}
+
+			docShards, recreate, err := findDocShardFiles(args[0])
+			if err != nil {
+				logger.Errorf("[%s] Find shards: %s\n", appName, err)
+				continue
+			}
+
+			if len(docShards) < 2 {
+				logger.Errorf("[%s] Not enough shards to construct\n", appName)
+				continue
+			}
+
+			yes, err := app.readYesNo(fmt.Sprintf("Construct %s%s%s (%d)", logger.Color.Green(), filepath.Join(filepath.Dir(args[0]), recreate), logger.Color.End(), len(docShards)))
+			if err != nil {
+				if readError(err) {
+					return
+				}
+				continue
+			}
+
+			if !yes {
+				continue
+			}
+
+			err = tela.ConstructFromShards(docShards, recreate, filepath.Dir(args[0]))
+			if err != nil {
+				logger.Errorf("[%s] Construct: %s\n", appName, err)
+			}
+		case "file-diff":
+			if args == nil {
+				completer := readline.NewPrefixCompleter(completerFiles("."))
+				line, err := app.readLineWithCompleter("Enter source", "", completer)
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = []string{line}
+			}
+
+			args[0] = filepath.Clean(args[0])
+			if _, err = os.Stat(args[0]); os.IsNotExist(err) {
+				logger.Errorf("[%s] %q does not exists\n", appName, args[0])
+				continue
+			}
+
+			if len(args) < 2 {
+				completer := readline.NewPrefixCompleter(completerFiles("."))
+				line, err := app.readLineWithCompleter("Enter comparison", "", completer)
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = append(args, line)
+			}
+
+			args[1] = filepath.Clean(args[1])
+			if _, err = os.Stat(args[1]); os.IsNotExist(err) {
+				logger.Errorf("[%s] %q does not exists\n", appName, args[1])
+				continue
+			}
+
+			diff, fileNames, err := getFileDiff(args[0], args[1])
+			if err != nil {
+				logger.Errorf("[%s] Get Diff: %s\n", appName, err)
+				continue
+			}
+
+			err = app.printDiff(diff, fileNames)
+			if err != nil {
+				logger.Errorf("[%s] File Diff: %s\n", appName, err)
+				continue
+			}
+		case "scid-diff":
+			if gnomon.Indexer == nil {
+				logger.Printf("[%s] Gnomon is not running\n", appName)
+				continue
+			}
+
+			if args == nil {
+				line, err := app.readLine("Enter SCID1", "")
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = []string{line}
+			}
+
+			if len(args[0]) != 64 {
+				logger.Errorf("[%s] Invalid SCID: %q\n", appName, args[0])
+				continue
+			}
+
+			vars := gnomon.GetAllSCIDVariableDetails(args[0])
+			if vars == nil {
+				logger.Printf("[%s] SCID not found\n", appName)
+				continue
+			}
+
+			var diff []string
+			for _, h := range vars {
+				switch k := h.Key.(type) {
+				case string:
+					if k == "C" {
+						code, ok := h.Value.(string)
+						if ok {
+							diff = append(diff, code)
+						}
+
+						break
+					}
+				}
+			}
+
+			if len(args) < 2 {
+				line, err := app.readLine("Enter SCID2", "")
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = append(args, line)
+			}
+
+			if len(args[1]) != 64 {
+				logger.Errorf("[%s] Invalid SCID: %q\n", appName, args[1])
+				continue
+			}
+
+			vars = gnomon.GetAllSCIDVariableDetails(args[1])
+			if vars == nil {
+				logger.Printf("[%s] SCID2 not found\n", appName)
+				continue
+			}
+
+			for _, h := range vars {
+				switch k := h.Key.(type) {
+				case string:
+					if k == "C" {
+						code, ok := h.Value.(string)
+						if ok {
+							diff = append(diff, code)
+						}
+
+						break
+					}
+				}
+			}
+
+			err = app.printDiff(diff, []string{args[0], args[1]})
+			if err != nil {
+				logger.Errorf("[%s] SCID Diff: %s\n", appName, err)
+				continue
+			}
 		case "serve":
 			if args == nil {
 				line, err := app.readLine("Enter SCID to serve", "")
@@ -621,7 +1001,30 @@ func main() {
 			link, err := tela.ServeTELA(args[0], app.endpoint)
 			if err != nil {
 				logger.Errorf("[%s] Serve: %s\n", appName, err)
-				continue
+				if !strings.Contains(err.Error(), "user defined no updates and content has been updated") {
+					continue
+				}
+
+				// Prompt to allow serving the updated TELA content
+				yes, err := app.readYesNo("Allow this updated content to be served")
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				if !yes {
+					continue
+				}
+
+				tela.AllowUpdates(true)
+				link, err = tela.ServeTELA(args[0], app.endpoint)
+				tela.AllowUpdates(false)
+				if err != nil {
+					logger.Errorf("[%s] Serve: %s\n", appName, err)
+					continue
+				}
 			}
 
 			if !app.openInBrowser {
@@ -874,6 +1277,29 @@ func main() {
 
 			logger.Printf("[%s] Wallet connected: %s\n", appName, file)
 			logger.Printf("[%s] Address: %s\n", appName, app.wallet.disk.GetAddress().String())
+		case "balance":
+			if app.wallet.disk == nil {
+				logger.Errorf("[%s] Open a wallet file to view balance\n", appName)
+				continue
+			}
+
+			app.wallet.disk.Sync_Wallet_Memory_With_Daemon()
+			account := app.wallet.disk.GetAccount()
+
+			logger.Printf("[%s] %sDERO%s %s\n", appName, logger.Color.Magenta(), logger.Color.End(), globals.FormatMoney(account.Balance_Mature))
+
+			var balances []string
+			for scid := range account.EntriesNative {
+				if !scid.IsZero() {
+					balanceMature, _ := app.wallet.disk.Get_Balance_scid(scid)
+					balances = append(balances, fmt.Sprintf("%s%s:%s %s", logger.Color.Grey(), scid.String(), logger.Color.End(), globals.FormatMoney(balanceMature)))
+				}
+			}
+
+			sort.Strings(balances)
+			for _, balance := range balances {
+				logger.Printf("[%s] %s\n", appName, balance)
+			}
 		case "rate":
 			if app.wallet.disk == nil {
 				logger.Errorf("[%s] Open a wallet file to rate SCID\n", appName)
@@ -1148,7 +1574,7 @@ func main() {
 			// Install TELA DOC
 			txid, err := tela.Installer(app.wallet.disk, ringsize, doc)
 			if err != nil {
-				logger.Errorf("[%s] DOC install error: %s\n", appName, err)
+				logger.Errorf("[%s] DOC install: %s\n", appName, err)
 				continue
 			}
 
@@ -1202,12 +1628,35 @@ func main() {
 				continue
 			}
 
-			ringsize, err := app.ringsizePrompt("INDEX")
+			modTag, err := app.modsPrompt()
 			if err != nil {
 				if readError(err) {
 					return
 				}
 				continue
+			}
+
+			if modTag != "" {
+				index.Mods = modTag
+			}
+
+			var ringsize uint64
+			if index.Mods == "" {
+				ringsize, err = app.ringsizePrompt("INDEX")
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+			} else {
+				// MODs have no functionality for installs above RS 2
+				ringsize = 2
+				logger.Printf("[%s] MODs will use ringsize %d\n", appName, ringsize)
+			}
+
+			if ringsize > 2 {
+				logger.Warnf("[%s] Ringsize is more than 2, this INDEX will be immutable\n", appName)
 			}
 
 			yes, err := app.readYesNo("Confirm INDEX install")
@@ -1280,6 +1729,30 @@ func main() {
 				continue
 			}
 
+			// INDEX is behind latest version, it will update to latest anyways but ask to push current values with latest contract code
+			latestVersion := tela.GetLatestContractVersion(false)
+			if index.SCVersion.LessThan(latestVersion) {
+				logger.Printf("[%s] INDEX is behind latest version v%s => v%s\n", appName, index.SCVersion.String(), latestVersion.String())
+				yes, err := app.readYesNo("Update INDEX to latest using current values")
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				if yes {
+					txid, err := tela.Updater(app.wallet.disk, &index)
+					if err != nil {
+						logger.Errorf("[%s] INDEX update: %s\n", appName, err)
+						continue
+					}
+
+					logger.Printf("[%s] INDEX update TXID: %s\n", appName, txid)
+					continue
+				}
+			}
+
 			// Prompt for INDEX name or use arg
 			var name string
 			if len(args) < 2 {
@@ -1304,7 +1777,37 @@ func main() {
 				continue
 			}
 
-			index.SCID = args[0]
+			if index.SCVersion != nil {
+				// SC code is still behind TELA-MODs version so don't offer
+				if !index.SCVersion.LessThan(tela.Version{Major: 1, Minor: 1, Patch: 0}) {
+					_, err = tela.Mods.TagsAreValid(index.Mods)
+					if err != nil {
+						logger.Warnf("[%s] MODs are invalid, continue update to repair: %s\n", appName, err)
+					}
+
+					modTag, err := app.modsPrompt()
+					if err != nil {
+						if readError(err) {
+							return
+						}
+						continue
+					}
+
+					index.Mods = modTag
+				}
+			}
+
+			yes, err := app.readYesNo("Confirm INDEX update")
+			if err != nil {
+				if readError(err) {
+					return
+				}
+				continue
+			}
+
+			if !yes {
+				continue
+			}
 
 			txid, err := tela.Updater(app.wallet.disk, &index)
 			if err != nil {
@@ -1313,6 +1816,460 @@ func main() {
 			}
 
 			logger.Printf("[%s] INDEX update TXID: %s\n", appName, txid)
+		case "mods":
+			if args == nil || len(args) < 1 {
+				// Print all MOD info
+				allTelaMods := tela.Mods.GetAllMods()
+				for _, m := range allTelaMods {
+					printMODInfo(m, true)
+				}
+				fmt.Println(printDivider)
+
+				continue
+			}
+
+			// Print MOD info by MODClass
+			for _, c := range tela.Mods.GetAllClasses() {
+				if args[0] == c.Tag {
+					printMODClassInfo(c)
+					allTelaMods := tela.Mods.GetAllMods()
+					for _, m := range allTelaMods {
+						if strings.HasPrefix(m.Tag, c.Tag) {
+							printMODInfo(m, true)
+						}
+					}
+					fmt.Println(printDivider)
+
+					break
+				}
+			}
+		case "mod-info":
+			if args == nil {
+				completer := readline.NewPrefixCompleter(completerMODs("")...)
+				line, err := app.readLineWithCompleter("Enter modTag", "", completer)
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = []string{line}
+			}
+
+			mod := tela.Mods.GetMod(args[0])
+			if mod.Tag == "" {
+				logger.Errorf("[%s] MOD %q not found\n", appName, args[0])
+				continue
+			}
+
+			printMODInfo(mod, true)
+			fmt.Println(printDivider)
+		case "set-var":
+			if app.wallet.disk == nil {
+				logger.Errorf("[%s] Open a wallet file to set INDEX variable\n", appName)
+				continue
+			}
+
+			pass, err := app.readWithPasswordPrompt("Confirm password")
+			if err != nil {
+				if readError(err) {
+					return
+				}
+				continue
+			}
+
+			if !app.wallet.disk.Check_Password(string(pass)) {
+				logger.Errorf("[%s] Invalid password\n", appName)
+				continue
+			}
+
+			if args == nil {
+				line, err := app.readLine("Enter INDEX SCID", "")
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = []string{line}
+			}
+
+			if len(args[0]) != 64 {
+				logger.Errorf("[%s] Invalid SCID: %q\n", appName, args[0])
+				continue
+			}
+
+			index, err := tela.GetINDEXInfo(args[0], app.endpoint)
+			if err != nil {
+				logger.Errorf("[%s] GetINDEXInfo: %s\n", appName, err)
+				continue
+			}
+
+			if index.Author == "anon" {
+				logger.Errorf("[%s] SCID %q cannot set variables\n", appName, args[0])
+				continue
+			}
+
+			modTags, err := tela.Mods.TagsAreValid(index.Mods)
+			if err != nil {
+				logger.Errorf("[%s] Invalid MOD tags: %q\n", appName, err)
+				continue
+			}
+
+			// Handle MOD requirements
+			var isOwner = index.Author == app.wallet.disk.GetAddress().String()
+			var canSetVars, ownerOnly, singleUse, immutable bool
+			for _, t := range modTags {
+				if strings.HasPrefix(t, "vs") {
+					canSetVars = true
+					switch t {
+					case tela.Mods.Tag(0):
+						ownerOnly = true
+					case tela.Mods.Tag(1):
+						immutable = true
+						ownerOnly = true
+					case tela.Mods.Tag(2):
+						singleUse = true
+					case tela.Mods.Tag(4):
+						immutable = true
+					}
+				}
+			}
+
+			if !canSetVars {
+				logger.Errorf("[%s] SCID %q cannot set variables\n", appName, args[0])
+				continue
+			}
+
+			if ownerOnly && !isOwner {
+				logger.Errorf("[%s] Wallet address does not match author of SCID %q\n", appName, args[0])
+				continue
+			}
+
+			if len(args) < 2 {
+				line, err := app.readLine("Enter key to store", "")
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = append(args, line)
+			}
+
+			var checkKey string
+			switch {
+			case singleUse && !isOwner:
+				checkKey = fmt.Sprintf("var_%s_%s", app.wallet.disk.GetAddress().String(), args[1])
+			case immutable:
+				checkKey = fmt.Sprintf("ivar_%s", args[1])
+				if !isOwner {
+					checkKey = fmt.Sprintf("ivar_%s_%s", app.wallet.disk.GetAddress().String(), args[1])
+				}
+			}
+
+			// MOD does not allow overwrites
+			if checkKey != "" {
+				value, exists, err := tela.KeyExists(args[0], checkKey, app.endpoint)
+				if err != nil {
+					logger.Errorf("[%s] KeyExists: %s\n,", appName, err)
+					continue
+				}
+
+				if exists {
+					logger.Errorf("[%s] Cannot change key %q with store: %s\n", appName, checkKey, value)
+					continue
+				}
+
+				logger.Warnf("[%s] Key store %q will be immutable on SCID %s\n", appName, args[1], args[0])
+			} else {
+				// MOD allows overwrites or isOwner
+				checkKey = fmt.Sprintf("var_%s", args[1])
+				if !isOwner {
+					checkKey = fmt.Sprintf("var_%s_%s", app.wallet.disk.GetAddress().String(), args[1])
+				}
+
+				_, exists, err := tela.KeyExists(args[0], checkKey, app.endpoint)
+				if err != nil {
+					logger.Errorf("[%s] KeyExists: %s\n", appName, err)
+					continue
+				}
+
+				if exists {
+					yes, err := app.readYesNo(fmt.Sprintf("Key %q already exists, overwrite", args[1]))
+					if err != nil {
+						if readError(err) {
+							return
+						}
+						continue
+					}
+
+					if !yes {
+						continue
+					}
+				}
+			}
+
+			if len(args) < 3 {
+				line, err := app.readLine(fmt.Sprintf("Enter value for key %q", args[1]), "")
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = append(args, line)
+			}
+
+			yes, err := app.readYesNo("Confirm SetVar")
+			if err != nil {
+				if readError(err) {
+					return
+				}
+				continue
+			}
+
+			if !yes {
+				continue
+			}
+
+			txid, err := tela.SetVar(app.wallet.disk, args[0], args[1], args[2])
+			if err != nil {
+				logger.Errorf("[%s] SetVar: %s\n", appName, err)
+				continue
+			}
+
+			logger.Printf("[%s] SetVar TXID: %s\n", appName, txid)
+		case "delete-var":
+			if app.wallet.disk == nil {
+				logger.Errorf("[%s] Open a wallet file to delete INDEX variable\n", appName)
+				continue
+			}
+
+			pass, err := app.readWithPasswordPrompt("Confirm password")
+			if err != nil {
+				if readError(err) {
+					return
+				}
+				continue
+			}
+
+			if !app.wallet.disk.Check_Password(string(pass)) {
+				logger.Errorf("[%s] Invalid password\n", appName)
+				continue
+			}
+
+			if args == nil {
+				line, err := app.readLine("Enter INDEX SCID", "")
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = []string{line}
+			}
+
+			if len(args[0]) != 64 {
+				logger.Errorf("[%s] Invalid SCID: %q\n", appName, args[0])
+				continue
+			}
+
+			index, err := tela.GetINDEXInfo(args[0], app.endpoint)
+			if err != nil {
+				logger.Errorf("[%s] GetINDEXInfo: %s\n", appName, err)
+				continue
+			}
+
+			if index.Author == "anon" {
+				logger.Errorf("[%s] SCID %q cannot delete variables\n", appName, args[0])
+				continue
+			}
+
+			modTags, err := tela.Mods.TagsAreValid(index.Mods)
+			if err != nil {
+				logger.Errorf("[%s] Invalid MOD tags: %q\n", appName, err)
+				continue
+			}
+
+			// Handle MOD requirements
+			var canDeleteVars bool
+			for _, t := range modTags {
+				if strings.HasPrefix(t, "vs") {
+					canDeleteVars = true
+					switch t {
+					case tela.Mods.Tag(1), tela.Mods.Tag(4):
+						canDeleteVars = false
+					}
+				}
+			}
+
+			if !canDeleteVars {
+				logger.Errorf("[%s] SCID %q cannot delete variables\n", appName, args[0])
+				continue
+			}
+
+			if index.Author != app.wallet.disk.GetAddress().String() {
+				logger.Errorf("[%s] Wallet address does not match author of SCID %q\n", appName, args[0])
+				continue
+			}
+
+			if len(args) < 2 {
+				line, err := app.readLine("Enter key to delete", "")
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = append(args, line)
+			}
+
+			_, exists, err := tela.KeyExists(args[0], fmt.Sprintf("var_%s", args[1]), app.endpoint)
+			if err != nil {
+				logger.Errorf("[%s] KeyExists: %s\n", appName, err)
+				continue
+			}
+
+			if !exists {
+				logger.Errorf("[%s] Key %q does not exists on %s\n", appName, args[1], args[0])
+				continue
+			}
+
+			yes, err := app.readYesNo("Confirm DeleteVar")
+			if err != nil {
+				if readError(err) {
+					return
+				}
+				continue
+			}
+
+			if !yes {
+				continue
+			}
+
+			txid, err := tela.DeleteVar(app.wallet.disk, args[0], args[1])
+			if err != nil {
+				logger.Errorf("[%s] DeleteVar: %s\n", appName, err)
+				continue
+			}
+
+			logger.Printf("[%s] DeleteVar TXID: %s\n", appName, txid)
+		case "sc-execute":
+			if app.wallet.disk == nil {
+				logger.Errorf("[%s] Open a wallet file to execute a smart contract\n", appName)
+				continue
+			}
+
+			pass, err := app.readWithPasswordPrompt("Confirm password")
+			if err != nil {
+				if readError(err) {
+					return
+				}
+				continue
+			}
+
+			if !app.wallet.disk.Check_Password(string(pass)) {
+				logger.Errorf("[%s] Invalid password\n", appName)
+				continue
+			}
+
+			if args == nil {
+				line, err := app.readLine("Enter SCID", "")
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = []string{line}
+			}
+
+			if len(args[0]) != 64 {
+				logger.Errorf("[%s] Invalid SCID: %q\n", appName, args[0])
+				continue
+			}
+
+			index, err := tela.GetINDEXInfo(args[0], app.endpoint)
+			if err != nil {
+				logger.Errorf("[%s] GetINDEXInfo: %s\n", appName, err)
+				continue
+			}
+
+			if index.Author == "anon" {
+				logger.Errorf("[%s] SCID %q cannot execute functions\n", appName, args[0])
+				continue
+			}
+
+			isOwner := index.Author == app.wallet.disk.GetAddress().String()
+
+			if len(args) < 2 {
+				completer := readline.NewPrefixCompleter(completerSCFunctionNames(isOwner, index.SC)...)
+				line, err := app.readLineWithCompleter("Enter function name", "", completer)
+				if err != nil {
+					if readError(err) {
+						return
+					}
+					continue
+				}
+
+				args = append(args, line)
+			}
+
+			if args[1] == "" {
+				logger.Errorf("[%s] Invalid function name: %q\n", appName, args[0])
+				continue
+			}
+
+			transfers, arguments, err := app.executeContractPrompt(args[0], args[1], index.SC)
+			if err != nil {
+				if readError(err) {
+					return
+				}
+
+				logger.Errorf("[%s] %s: %s\n", appName, args[1], err)
+				continue
+			}
+
+			// Display the transfer and arguments for confirmation
+			if indentTransfers, err := json.MarshalIndent(transfers, "", " "); err == nil {
+				fmt.Printf("%s\n", string(indentTransfers))
+			} else {
+				fmt.Printf("%v\n", transfers)
+			}
+
+			if indentArguments, err := json.MarshalIndent(arguments, "", " "); err == nil {
+				fmt.Printf("%s\n", string(indentArguments))
+			} else {
+				fmt.Printf("%v\n", arguments)
+			}
+
+			yes, err := app.readYesNo(fmt.Sprintf("Confirm %s", args[1]))
+			if err != nil {
+				if readError(err) {
+					return
+				}
+				continue
+			}
+
+			if !yes {
+				continue
+			}
+
+			txid, err := tela.Transfer(app.wallet.disk, 2, transfers, arguments)
+			if err != nil {
+				logger.Errorf("[%s] %s: %s\n", appName, args[1], err)
+				continue
+			}
+
+			logger.Printf("[%s] %s TXID: %s\n", appName, args[1], txid)
 		case "gnomon":
 			if args == nil {
 				logger.Errorf("[%s] Missing Gnomon argument\n", appName)
@@ -1399,7 +2356,7 @@ func main() {
 					subDir = "gnomon"
 				}
 
-				yes, err := app.readYesNo(fmt.Sprintf("Delete and resync %s%s%s DB", logger.Color.Red(), subDir, logger.Color.End()))
+				yes, err := app.readYesNo(fmt.Sprintf("Resync %s%s%s DB", logger.Color.Red(), subDir, logger.Color.End()))
 				if err != nil {
 					if readError(err) {
 						return
@@ -1413,12 +2370,53 @@ func main() {
 
 				stopGnomon()
 				os.RemoveAll(filepath.Join("datashards", subDir))
-				logger.Printf("[%s] Gnomon %s DB deleted\n", appName, subDir)
+				logger.Printf("[%s] Resyncing %s%s%s DB\n", appName, logger.Color.Green(), subDir, logger.Color.End())
 				time.Sleep(time.Second)
 				startGnomon(app.endpoint)
 				if gnomon.Indexer != nil {
 					time.Sleep(time.Second * 5)
 				}
+			case "add":
+				if len(args) < 2 {
+					line, err := app.readLine("Enter SCID(s)", "")
+					if err != nil {
+						if readError(err) {
+							return
+						}
+						continue
+					}
+
+					args = append(args, line)
+				}
+
+				if len(args[1]) != 64 {
+					logger.Errorf("[%s] Invalid SCID: %q\n", appName, args[1])
+					continue
+				}
+
+				scidsToAdd := args[1:]
+
+				// Check that all entered SCIDs are valid
+				var invalidSCID string
+				for _, sc := range scidsToAdd {
+					if len(strings.TrimSpace(sc)) != 64 {
+						invalidSCID = sc
+						break
+					}
+				}
+
+				if invalidSCID != "" {
+					logger.Errorf("[%s] Invalid SCID: %q\n", appName, invalidSCID)
+					continue
+				}
+
+				err = app.addToIndex(scidsToAdd)
+				if err != nil {
+					logger.Errorf("[%s] Could not add SCID(s): %s\n", appName, err)
+					continue
+				}
+
+				logger.Printf("[%s] SCID(s) added\n", appName)
 			default:
 				logger.Printf("[%s] Unknown Gnomon command: %q\n", appName, args[0])
 			}
@@ -1454,6 +2452,103 @@ func main() {
 					args = append(args, line)
 				}
 
+				if len(args) == 3 {
+					switch args[1] {
+					case "vars":
+						if len(args[2]) != 64 {
+							logger.Errorf("[%s] Invalid SCID: %q\n", appName, args[2])
+							continue
+						}
+
+						vars := gnomon.GetAllSCIDVariableDetails(args[2])
+						if vars == nil {
+							logger.Printf("[%s] SCID not found\n", appName)
+							continue
+						}
+
+						var varResults []string
+						for _, h := range vars {
+							switch k := h.Key.(type) {
+							case string:
+								if k == "C" {
+									continue
+								}
+
+								switch v := h.Value.(type) {
+								case string:
+									varResults = append(varResults, fmt.Sprintf("{%s%q%s, %q}", logger.Color.Cyan(), k, logger.Color.End(), v))
+								case uint64:
+									varResults = append(varResults, fmt.Sprintf("{%s%q%s, %d}", logger.Color.Cyan(), k, logger.Color.End(), v))
+								default:
+									varResults = append(varResults, fmt.Sprintf("{%s%q%s, %v}", logger.Color.Cyan(), k, logger.Color.End(), v))
+								}
+							case uint64:
+								switch v := h.Value.(type) {
+								case string:
+									varResults = append(varResults, fmt.Sprintf("{%s%d%s, %q}", logger.Color.Cyan(), k, logger.Color.End(), v))
+								case uint64:
+									varResults = append(varResults, fmt.Sprintf("{%s%d%s, %d}", logger.Color.Cyan(), k, logger.Color.End(), v))
+								default:
+									varResults = append(varResults, fmt.Sprintf("{%s%d%s, %v}", logger.Color.Cyan(), k, logger.Color.End(), v))
+								}
+							default:
+								switch v := h.Value.(type) {
+								case string:
+									varResults = append(varResults, fmt.Sprintf("{%s%v%s, %q}", logger.Color.Cyan(), k, logger.Color.End(), v))
+								case uint64:
+									varResults = append(varResults, fmt.Sprintf("{%s%v%s, %d}", logger.Color.Cyan(), k, logger.Color.End(), v))
+								default:
+									varResults = append(varResults, fmt.Sprintf("{%s%v%s, %v}", logger.Color.Cyan(), k, logger.Color.End(), v))
+								}
+							}
+						}
+
+						if len(varResults) < 1 {
+							logger.Errorf("[%s] No variables found\n", appName)
+							continue
+						}
+
+						sort.Strings(varResults)
+
+						// Don't want the divider between variable prints from app.paging
+						display := app.pageSize - 1
+						resultLen := len(varResults)
+
+						isPaged := false
+						if resultLen > app.pageSize {
+							isPaged = true
+							logger.Printf("[%s] Showing %d of %d variables\n", appName, app.pageSize, resultLen)
+						}
+
+						for printed, vLine := range varResults {
+							fmt.Println(vLine)
+
+							end := printed == resultLen-1
+							if printed >= display && !end {
+								var yes bool
+								yes, err = app.readYesNo(fmt.Sprintf("Show more variables? (%d)", (resultLen-1)-printed))
+								if err != nil {
+									return
+								}
+
+								if !yes {
+									break
+								}
+
+								display = display + app.pageSize
+							}
+
+							if isPaged && end {
+								logger.Printf("[%s] End of variables\n", appName)
+							}
+						}
+					default:
+						logger.Errorf("[%s] Unknown SCID command: %q\n", appName, args[1])
+					}
+
+					continue
+				}
+
 				if len(args[1]) != 64 {
 					logger.Errorf("[%s] Invalid SCID: %q\n", appName, args[1])
 					continue
@@ -1467,10 +2562,10 @@ func main() {
 
 				var found bool
 				var owner string
-				for sc, own := range all {
+				for sc := range all {
 					if sc == args[1] {
 						found = true
-						owner = own
+						owner = gnomon.GetOwnerAddress(sc)
 						break
 					}
 				}
@@ -1495,6 +2590,88 @@ func main() {
 						return
 					}
 				}
+			case "value":
+				all := gnomon.GetAllOwnersAndSCIDs()
+				if len(all) < 1 {
+					logger.Printf("[%s] No SCIDs found\n", appName)
+					continue
+				}
+
+				if len(args) < 2 {
+					line, err := app.readLine("Enter value to search", "")
+					if err != nil {
+						if readError(err) {
+							return
+						}
+						continue
+					}
+
+					args = append(args, line)
+				}
+
+				var resultLines [][]string
+				for sc := range all {
+					dURL, likesRatio, err := app.getLikesRatio(sc, true)
+					if err != nil {
+						continue
+					}
+
+					vStr, _ := gnomon.GetSCIDKeysByValue(sc, args[1])
+					if vStr == nil {
+						continue
+					}
+
+					owner := gnomon.GetOwnerAddress(sc)
+					resultLines = append(resultLines, parseSearchQuery(sc, owner, dURL, likesRatio))
+				}
+
+				err = app.paging(resultLines)
+				if err != nil {
+					if readError(err) {
+						return
+					}
+				}
+			case "key":
+				all := gnomon.GetAllOwnersAndSCIDs()
+				if len(all) < 1 {
+					logger.Printf("[%s] No SCIDs found\n", appName)
+					continue
+				}
+
+				if len(args) < 2 {
+					line, err := app.readLine("Enter key to search", "")
+					if err != nil {
+						if readError(err) {
+							return
+						}
+						continue
+					}
+
+					args = append(args, line)
+				}
+
+				var resultLines [][]string
+				for sc := range all {
+					dURL, likesRatio, err := app.getLikesRatio(sc, true)
+					if err != nil {
+						continue
+					}
+
+					vStr, _ := gnomon.GetSCIDValuesByKey(sc, args[1])
+					if vStr == nil {
+						continue
+					}
+
+					owner := gnomon.GetOwnerAddress(sc)
+					resultLines = append(resultLines, parseSearchQuery(sc, owner, dURL, likesRatio))
+				}
+
+				err = app.paging(resultLines)
+				if err != nil {
+					if readError(err) {
+						return
+					}
+				}
 			case "all":
 				all := gnomon.GetAllOwnersAndSCIDs()
 				if len(all) < 1 {
@@ -1503,12 +2680,13 @@ func main() {
 				}
 
 				var resultLines [][]string
-				for sc, owner := range all {
+				for sc := range all {
 					dURL, likesRatio, err := app.getLikesRatio(sc, true)
 					if err != nil {
 						continue
 					}
 
+					owner := gnomon.GetOwnerAddress(sc)
 					resultLines = append(resultLines, parseSearchQuery(sc, owner, dURL, likesRatio))
 				}
 
@@ -1582,12 +2760,13 @@ func main() {
 				}
 
 				var resultLines [][]string
-				for sc, owner := range all {
+				for sc := range all {
 					dURL, likesRatio, err := app.getLikesRatio(sc, true)
 					if err != nil {
 						continue
 					}
 
+					owner := gnomon.GetOwnerAddress(sc)
 					if strings.Contains(strings.ToLower(dURL), strings.ToLower(args[1])) {
 						resultLines = append(resultLines, parseSearchQuery(sc, owner, dURL, likesRatio))
 					}
@@ -1631,7 +2810,65 @@ func main() {
 							if ok {
 								fmt.Println(code)
 							}
+
+							break
 						}
+					}
+				}
+			case "line":
+				if len(args) < 2 {
+					line, err := app.readLine("Enter code line", "")
+					if err != nil {
+						if readError(err) {
+							return
+						}
+						continue
+					}
+
+					args = append(args, line)
+				}
+
+				all := gnomon.GetAllOwnersAndSCIDs()
+				if len(all) < 1 {
+					logger.Printf("[%s] No SCIDs found\n", appName)
+					continue
+				}
+
+				var resultLines [][]string
+				for sc := range all {
+					dURL, likesRatio, err := app.getLikesRatio(sc, true)
+					if err != nil {
+						continue
+					}
+
+					vars := gnomon.GetAllSCIDVariableDetails(sc)
+					if vars == nil {
+						continue
+					}
+
+					owner := gnomon.GetOwnerAddress(sc)
+
+					for _, h := range vars {
+						switch k := h.Key.(type) {
+						case string:
+							if k == "C" {
+								code, ok := h.Value.(string)
+								if ok {
+									if strings.Contains(code, args[1]) {
+										resultLines = append(resultLines, parseSearchQuery(sc, owner, dURL, likesRatio))
+									}
+								}
+
+								break
+							}
+						}
+					}
+				}
+
+				err := app.paging(resultLines)
+				if err != nil {
+					if readError(err) {
+						return
 					}
 				}
 			case "author":
@@ -1660,12 +2897,13 @@ func main() {
 				}
 
 				var resultLines [][]string
-				for sc, owner := range all {
+				for sc := range all {
 					dURL, likesRatio, err := app.getLikesRatio(sc, true)
 					if err != nil {
 						continue
 					}
 
+					owner := gnomon.GetOwnerAddress(sc)
 					if strings.ToLower(owner) == args[1] {
 						resultLines = append(resultLines, parseSearchQuery(sc, owner, dURL, likesRatio))
 					}
@@ -1755,6 +2993,7 @@ func main() {
 					fmt.Printf("Average: %.1f/10   (%s)\n", ratings.Average, tela.Ratings.Category(uint64(ratings.Average)))
 				}
 
+				var resultLines [][]string
 				for _, r := range ratings.Ratings {
 					rating, err := tela.Ratings.ParseString(r.Rating)
 					if err != nil {
@@ -1762,7 +3001,14 @@ func main() {
 						continue
 					}
 
-					fmt.Printf("Address: %s  Height: %-10d Rating: %-5s %s\n", r.Address, r.Height, fmt.Sprintf("[%d]", r.Rating), rating)
+					resultLines = append(resultLines, []string{fmt.Sprintf("Address: %s  Height: %-10d Rating: %-5s %s", r.Address, r.Height, fmt.Sprintf("[%d]", r.Rating), rating)})
+				}
+
+				err = app.paging(resultLines)
+				if err != nil {
+					if readError(err) {
+						return
+					}
 				}
 			case "my":
 				if app.wallet.disk == nil {
@@ -1814,6 +3060,149 @@ func main() {
 					if readError(err) {
 						return
 					}
+				}
+			case "exclude":
+				if len(args) < 2 {
+					logger.Errorf("[%s] Missing search exclude argument\n", appName)
+					continue
+				}
+
+				switch args[1] {
+				case "view":
+					var resultLines [][]string
+					for _, exclude := range app.exclusions {
+						resultLines = append(resultLines, []string{exclude})
+					}
+
+					if len(resultLines) < 1 {
+						logger.Printf("[%s] No search exclusions enabled\n", appName)
+						continue
+					}
+
+					err := app.paging(resultLines)
+					if err != nil {
+						if readError(err) {
+							return
+						}
+					}
+				case "clear":
+					if len(app.exclusions) < 1 {
+						logger.Printf("[%s] No search exclusions enabled\n", appName)
+						continue
+					}
+
+					yes, err := app.readYesNo("Clear all search exclusions")
+					if err != nil {
+						if readError(err) {
+							return
+						}
+						continue
+					}
+
+					if !yes {
+						continue
+					}
+
+					app.exclusions = []string{}
+					err = shards.DeleteSettingsKey(keys.exclude)
+					if err != nil {
+						logger.Debugf("[%s] Deleting stored search exclusions: %s\n", appName, err)
+					}
+
+					logger.Printf("[%s] Search exclusions cleared\n", appName)
+				case "add":
+					if len(args) < 3 {
+						line, err := app.readLine("Enter search exclusion", "")
+						if err != nil {
+							if readError(err) {
+								return
+							}
+							continue
+						}
+
+						args = append(args, line)
+					}
+
+					if args[2] == "" {
+						logger.Errorf("[%s] Invalid search exclusion\n", appName)
+						continue
+					}
+
+					var exists bool
+					for _, exclude := range app.exclusions {
+						if args[2] == exclude {
+							exists = true
+							break
+						}
+					}
+
+					if exists {
+						logger.Printf("[%s] Exclusion %q exists already\n", appName, args[2])
+						continue
+					}
+
+					app.exclusions = append(app.exclusions, args[2])
+					logger.Printf("[%s] Search exclusion added\n", appName)
+
+					storeExclusions, err := json.Marshal(app.exclusions)
+					if err != nil {
+						logger.Errorf("[%s] Marshal search exclusions: %s\n", appName, err)
+						continue
+					}
+
+					err = shards.StoreSettingsValue(keys.exclude, storeExclusions)
+					if err != nil {
+						logger.Debugf("[%s] Storing search exclusions: %s\n", appName, err)
+					}
+				case "remove":
+					if len(app.exclusions) < 1 {
+						logger.Printf("[%s] No search exclusions enabled\n", appName)
+						continue
+					}
+
+					if len(args) < 3 {
+						completer := readline.NewPrefixCompleter(app.completerSearchExclusions()...)
+						line, err := app.readLineWithCompleter("Enter search exclusion", "", completer)
+						if err != nil {
+							if readError(err) {
+								return
+							}
+							continue
+						}
+
+						args = append(args, line)
+					}
+
+					var removed bool
+					var tempExclusions []string
+					for i, exclude := range app.exclusions {
+						if exclude == args[2] {
+							tempExclusions = append(app.exclusions[:i], app.exclusions[i+1:]...)
+							removed = true
+							break
+						}
+					}
+
+					if !removed {
+						logger.Printf("[%s] Search exclusion %q not found\n", appName, args[2])
+						continue
+					}
+
+					app.exclusions = tempExclusions
+					logger.Printf("[%s] Search exclusion removed\n", appName)
+
+					storeExclusions, err := json.Marshal(app.exclusions)
+					if err != nil {
+						logger.Errorf("[%s] Marshal search exclusions: %s\n", appName, err)
+						continue
+					}
+
+					err = shards.StoreSettingsValue(keys.exclude, storeExclusions)
+					if err != nil {
+						logger.Debugf("[%s] Storing search exclusions: %s\n", appName, err)
+					}
+				default:
+					logger.Errorf("[%s] Unknown search exclude query: %q\n", appName, args[1])
 				}
 			default:
 				logger.Errorf("[%s] Unknown search query: %q\n", appName, args[0])

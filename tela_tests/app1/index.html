@@ -7,6 +7,7 @@
     <meta name="keywords" content="TELA, DERO Project, Civilware, DERO, $DERO" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
     <link rel="stylesheet" type="text/css" href="style.css">
+    <link id="favicon" rel="icon" href="" type="image/x-icon">
 </head>
 
 <body>
@@ -178,6 +179,18 @@
         let mouseTimeout;
         toggleIndicators("red");
         document.getElementById("connectButton").addEventListener("click", connectWebSocket);
+
+        const encodedSVG = encodeURIComponent(
+            `<svg id="favIcon" data-name="favIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 474.5 832.8">
+                <g id="Symbol">
+                    <rect fill="#46b868" y="714.2" width="118.61" height="118.61" />
+                    <rect fill="#ed2024" x="355.9" width="118.61" height="118.61" />
+                    <path fill="black"
+                        d="M355.9,118.61v119.44H.07L0,714.2h118.61v-119.47h355.9V118.61h-118.61ZM355.89,476.11H118.62v-119.41h237.27v119.41Z" />
+                </g>
+            </svg>`
+        );
+        document.getElementById("favicon").href = `data:image/svg+xml;charset=utf-8,${encodedSVG}`;
 
         // Cursor effect
         const svgCursor = document.getElementById("svgCursor");

@@ -9,6 +9,7 @@
 - [Get Started](#get-started)
     - [TELA-INDEX-1](TELA-INDEX-1/README.md)
     - [TELA-DOC-1](TELA-DOC-1/README.md)
+	- [TELA-MOD-1](TELA-MOD-1/README.md)
 - [Accessing TELA Content](#accessing-tela-content)
     - [Compliant Host Applications](#compliant-host-applications)
 - [Content Rating System](#content-rating-system)
@@ -16,6 +17,7 @@
 	- [Serving](#serving)
 	- [Installing](#installing)
 	- [Updating](#updating)
+	- [Variables](#variables)
 	- [Rating](#rating)
 	- [Parse](#parse)
 - [TELA-CLI](cmd/tela-cli/README.md)
@@ -41,7 +43,7 @@ TELA applications are built on two key smart contract components:
 Multiple `TELA-DOC-1` contracts can be installed and embedded within a `TELA-INDEX-1` application, allowing the use of extensive codebases beyond DERO’s [DVM-BASIC](https://docs.dero.io/developer/dvm.html) smart contract language. These contracts can also install necessary libraries and tools on the blockchain, facilitating modular development through reusable code.
 
 ### Additional Features
-- File Management: TELA ensures application code remains in an unalterable state using a combination of mutable (`TELA-INDEX-1`) and immutable (`TELA-DOC-1`) contracts. This structure provides a commit-based system that allows for code updates, verification, and retrieval of previous contract states.
+- File Management: TELA ensures application code remains in an unalterable state using a combination of mutable (`TELA-INDEX-1`) and immutable (`TELA-DOC-1`) contracts. This structure provides a commit-based system that allows for application updates, code verification, and retrieval of previous contract states.
 
 - Connectivity: TELA supports DERO's XSWD protocol, enabling permissioned web socket interactions with DERO wallets, enhancing connectivity and user interaction.
 
@@ -59,6 +61,10 @@ See the following for more information on how to get started creating and instal
 * [TELA-DOC-1](TELA-DOC-1/README.md)
 
   TELA application files and libraries
+
+* [TELA-MOD-1](TELA-MOD-1/README.md)
+
+  Additional TELA building blocks which extend the standard's features. 
 
 ### Accessing TELA Content
 The minimum requirements to access TELA content are:
@@ -150,6 +156,7 @@ func main() {
 	tela.ShutdownTELA()
 }
 ```
+
 #### Installing
 TELA content can be installed in a manner of ways. The `civilware/tela` package takes the necessary data for the type of smart contract and creates the applicable transfer arguments and code to easily install the new contract. For manual installation see [here](TELA-DOC-1/README.md#install-tela-doc-1).
 ```go
@@ -191,8 +198,8 @@ func main() {
 	// //
 	// Alternatively, Installer() takes a DOC or INDEX and installs it with the given walletapi
 	ringsize := uint64(2)
-	// ringsize 2 allows installed INDEX contracts to be updated,
-	// ringsize > 2 will make the installed INDEX contract immutable
+	// ringsize 2 allows installed INDEX contracts to be updated (public)
+	// ringsize > 2 will make the installed INDEX contract immutable (anonymous)
 	txid, err := tela.Installer(&walletapi.Wallet_Disk{}, ringsize, doc)
 	if err != nil {
 		// Handle error
@@ -212,7 +219,7 @@ import (
 )
 
 func main() {
-	// Create the new INDEX with all relevant data
+	// Create the INDEX to be updated, including all its relevant data
 	scid := "8dd839608e584f75b64c0ca7ff2c274879677ac3aaf60159c78797ee518946c2"
 
 	index := &tela.INDEX{
@@ -235,7 +242,7 @@ func main() {
 
 	// // //
 	// //
-	// Alternatively, Updater() takes a INDEX and updates it with the given walletapi
+	// Alternatively, Updater() takes an INDEX and updates it with the given walletapi
 	txid, err := tela.Updater(&walletapi.Wallet_Disk{}, index)
 	if err != nil {
 		// Handle error
@@ -252,8 +259,42 @@ func main() {
 }
 ```
 
+#### Variables
+Publicly deployed `TELA-INDEX-1` contracts that have enabled `TELA-MOD-1`'s can store arbitrary data. DERO wallets can set or delete key-value pairs. When executing a variable store operation it does not affect the commit state of the `TELA-INDEX-1`. The various `TELA-MOD-1`'s offer developers a wide range of versatility for making dynamic TELA content by allowing the variables stores to be view only, give them overwrite permissions or make them immutable.
+```go
+import (
+	"github.com/civilware/tela"
+	"github.com/deroproject/derohe/walletapi"
+)
+
+func main() {
+	scid := "e2a7384d2a1a6a99d9899d0db10891e5c3466823eadb039c18ec92fbcf2f8b89"
+	key := "key"
+	value := "value"
+
+	txid, err := tela.SetVar(&walletapi.Wallet_Disk{}, scid, key, value)
+	if err != nil {
+		// Handle error
+	}
+	// Variable is stored in SC, the SC stores keys with a "var_" prefix
+
+	txid, err = tela.DeleteVar(&walletapi.Wallet_Disk{}, scid, key)
+	if err != nil {
+		// Handle error
+	}
+	// Key is deleted
+
+	// Check if a TELA key exists on a SC
+	endpoint := "127.0.0.1:20000"
+	_, exists, _ := tela.KeyExists(scid, fmt.Sprintf("var_%s", key), endpoint)
+	if exists {
+		// Found key
+	}
+}
+```
+
 #### Rating
-TELA content can be rated easily. The extended content rating system components are exported to make integrating the same TELA interpretations an easy process. For manual rating procedures see [here](TELA-INDEX-1/README.md#rate-tela-index-1).
+Rating TELA content is a straightforward process, a DERO wallet submits a Rate transaction to a TELA SCID which gets stored in the smart contract's public ratings. The `civilware/tela` package's extended [content rating system](#content-rating-system) components are exported to make integrating the same TELA interpretations an easy task. For manual rating procedures see [here](TELA-INDEX-1/README.md#rate-tela-index-1).
 ```go
 import (
 	"fmt"
@@ -349,6 +390,14 @@ func main() {
 
 	// Format DERO smart contract code removing whitespace and comments
 	formattedCode, _ := tela.FormatSmartContract(dvmCode, scCode)
+
+	// Create DocShard files from a source file
+	tela.CreateShardFiles(fileName)
+
+	// Recreate a file in path from its DocShards
+	path := "dir1/"
+	docShards := [][]byte{}
+	tela.ConstructFromShards(docShards, fileName, path)
 
 	// Parse and inject headers into a DERO smart contract
 	headers1 := &tela.Headers{

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/civilware/Gnomon/rwc"
 	"github.com/civilware/tela/logger"
@@ -20,6 +21,7 @@ import (
 	"github.com/creachadair/jrpc2"
 	"github.com/creachadair/jrpc2/channel"
 	"github.com/deroproject/derohe/cryptography/crypto"
+	"github.com/deroproject/derohe/dvm"
 	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/rpc"
 	"github.com/deroproject/derohe/walletapi"
@@ -30,12 +32,13 @@ import (
 
 // TELA-DOC-1 structure
 type DOC struct {
-	DocType string `json:"docType"` // Language this document is using (ex: "TELA-HTML-1", "TELA-JS-1" or "TELA-CSS-1")
-	Code    string `json:"code"`    // The application code HTML, JS...
-	SubDir  string `json:"subDir"`  // Sub directory to place file in (always use / for further children, ex: "sub1" or "sub1/sub2/sub3")
-	SCID    string `json:"scid"`    // SCID of this DOC, only used after DOC has been installed on-chain
-	Author  string `json:"author"`  // Author of this DOC, only used after DOC has been installed on-chain
-	DURL    string `json:"dURL"`    // TELA dURL
+	DocType   string   `json:"docType"`           // Language this document is using (ex: "TELA-HTML-1", "TELA-JS-1" or "TELA-CSS-1")
+	Code      string   `json:"code"`              // The application code HTML, JS...
+	SubDir    string   `json:"subDir"`            // Sub directory to place file in (always use / for further children, ex: "sub1" or "sub1/sub2/sub3")
+	SCID      string   `json:"scid"`              // SCID of this DOC, only used after DOC has been installed on-chain
+	Author    string   `json:"author"`            // Author of this DOC, only used after DOC has been installed on-chain
+	DURL      string   `json:"dURL"`              // TELA dURL
+	SCVersion *Version `json:"version,omitempty"` // Version of this DOC SC
 	// Signature values of Code
 	Signature `json:"signature"`
 	// Standard headers
@@ -44,10 +47,13 @@ type DOC struct {
 
 // TELA-INDEX-1 structure
 type INDEX struct {
-	SCID   string   `json:"scid"`   // SCID of this INDEX, only used after INDEX has been installed on-chain
-	Author string   `json:"author"` // Author of this INDEX, only used after INDEX has been installed on-chain
-	DURL   string   `json:"dURL"`   // TELA dURL
-	DOCs   []string `json:"docs"`   // SCIDs of TELA DOCs embedded in this INDEX SC
+	SCID      string            `json:"scid"`              // SCID of this INDEX, only used after INDEX has been installed on-chain
+	Author    string            `json:"author"`            // Author of this INDEX, only used after INDEX has been installed on-chain
+	DURL      string            `json:"dURL"`              // TELA dURL
+	Mods      string            `json:"mods"`              // TELA modules string, stores addition functionality to be parsed when validating, module tags are separated by comma
+	DOCs      []string          `json:"docs"`              // SCIDs of TELA DOCs embedded in this INDEX SC
+	SCVersion *Version          `json:"version,omitempty"` // Version of this INDEX SC
+	SC        dvm.SmartContract `json:"-"`                 // DVM smart contract is used for further parsing of installed INDEXs
 	// Standard headers
 	Headers `json:"headers"`
 }
@@ -90,10 +96,22 @@ type TELA struct {
 	updates bool // Allow updated content
 	port    int  // Start port to range servers from
 	max     int  // Max amount of TELA servers
-	client  struct {
+	version struct {
+		pkg   Version
+		index []Version
+		docs  []Version
+	}
+	client struct {
 		WS  *websocket.Conn
 		RPC *jrpc2.Client
 	}
+}
+
+// Versioning structure used for package and contracts
+type Version struct {
+	Major int `json:"major"`
+	Minor int `json:"minor"`
+	Patch int `json:"patch"`
 }
 
 var tela TELA
@@ -104,6 +122,7 @@ const DOC_JSON = "TELA-JSON-1"     // JSON docType
 const DOC_CSS = "TELA-CSS-1"       // CSS docType
 const DOC_JS = "TELA-JS-1"         // JavaScript docType
 const DOC_MD = "TELA-MD-1"         // Markdown docType
+const DOC_GO = "TELA-GO-1"         // Golang docType
 
 const DEFAULT_MAX_SERVER = 20   // Default max amount of servers
 const DEFAULT_PORT_START = 8082 // Default start port for servers
@@ -112,12 +131,11 @@ const DEFAULT_MAX_PORT = 65535  // Maximum port of possible serving range
 
 const MINIMUM_GAS_FEE = uint64(100) // Minimum gas fee used when making transfers
 
-const TAG_LIBRARY = ".lib"
-
-const TELA_VERSION = "1.0.0"
+const TAG_LIBRARY = ".lib"       // A collection of standard DOCs embedded within an INDEX, each DOC is its own file
+const TAG_DOC_SHARDS = ".shards" // A collection of DocShard DOCs embedded within an INDEX, when recreated this will be one file
 
 // Accepted languages of this TELA package
-var acceptedLanguages = []string{DOC_STATIC, DOC_HTML, DOC_JSON, DOC_CSS, DOC_JS, DOC_MD}
+var acceptedLanguages = []string{DOC_STATIC, DOC_HTML, DOC_JSON, DOC_CSS, DOC_JS, DOC_MD, DOC_GO}
 
 // // Embed the standard TELA smart contracts
 
@@ -129,14 +147,59 @@ var TELA_DOC_1 string
 
 // Initialize the default storage path TELA will use, can be changed with SetShardPath if required
 func init() {
+	tela.version.pkg = Version{Major: 1, Minor: 0, Patch: 0}
+
+	tela.version.index = []Version{
+		{Major: 1, Minor: 0, Patch: 0},
+		{Major: 1, Minor: 1, Patch: 0},
+	}
+
+	tela.version.docs = []Version{
+		{Major: 1, Minor: 0, Patch: 0},
+	}
+
 	tela.path.main = shards.GetPath()
 
+	initMods()
 	initRatings()
 	tela.port = DEFAULT_PORT_START
 	tela.max = DEFAULT_MAX_SERVER
 
 	// Cleanup any residual files before package is used
 	os.RemoveAll(tela.path.tela())
+}
+
+// Returns semantic string
+func (v Version) String() string {
+	return fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
+}
+
+// LessThan returns true if v is less than ov
+func (v *Version) LessThan(ov Version) bool {
+	if v.Major < ov.Major {
+		return true
+	} else if v.Major > ov.Major {
+		return false
+	}
+
+	if v.Minor < ov.Minor {
+		return true
+	} else if v.Minor > ov.Minor {
+		return false
+	}
+
+	if v.Patch < ov.Patch {
+		return true
+	} else if v.Patch > ov.Patch {
+		return false
+	}
+
+	return false
+}
+
+// Equal returns true if v is equal to ov
+func (v *Version) Equal(ov Version) bool {
+	return v.Major == ov.Major && v.Minor == ov.Minor && v.Patch == ov.Patch
 }
 
 // Returns TELA datashard path
@@ -195,6 +258,24 @@ func IsAcceptedLanguage(language string) bool {
 	return false
 }
 
+// Parse a TELA DOC that has been formatted for DocShards and get its code shard
+func parseDocShardCode(fileName, code string) (shard []byte, err error) {
+	start := strings.Index(code, "/*")
+	end := strings.Index(code, "*/")
+
+	if start == -1 || end == -1 {
+		err = fmt.Errorf("could not parse multiline comment from %s", fileName)
+		return
+	}
+
+	comment := code[start+3:]
+	comment = strings.TrimSuffix(comment, "\n*/")
+
+	shard = []byte(comment)
+
+	return
+}
+
 // Parse a TELA DOC for useable code and write file if IsAcceptedLanguage
 func parseAndSaveTELADoc(filePath, code, doctype string) (err error) {
 	start := strings.Index(code, "/*")
@@ -219,6 +300,8 @@ func parseAndSaveTELADoc(filePath, code, doctype string) (err error) {
 	case DOC_JS:
 
 	case DOC_MD:
+
+	case DOC_GO:
 
 	case DOC_STATIC:
 
@@ -246,6 +329,23 @@ func decodeHexString(hexStr string) string {
 	return hexStr
 }
 
+// Handle all the GetSC append errors to result.ValuesString
+func getSCErrors(result string) bool {
+	errStr := []string{
+		"NOT AVAILABLE err:",
+		"Unmarshal error",
+		"UNKNOWN Data type",
+	}
+
+	for _, str := range errStr {
+		if strings.Contains(result, str) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // Get a string key from smart contract at endpoint
 func getContractVar(scid, key, endpoint string) (variable string, err error) {
 	var params = rpc.GetSC_Params{SCID: scid, Variables: false, Code: false, KeysString: []string{key}}
@@ -265,7 +365,7 @@ func getContractVar(scid, key, endpoint string) (variable string, err error) {
 	}
 
 	res := result.ValuesString
-	if len(res) < 1 || res[0] == "" || strings.Contains(res[0], "NOT AVAILABLE err:") {
+	if len(res) < 1 || res[0] == "" || getSCErrors(res[0]) {
 		err = fmt.Errorf("invalid string value for %q", key)
 		return
 	}
@@ -282,7 +382,7 @@ func getContractVar(scid, key, endpoint string) (variable string, err error) {
 }
 
 // Get a TXID as hex from daemon endpoint
-func getTXID(txid, endpoint string) (txidAsHex string, err error) {
+func getTXID(txid, endpoint string) (txidAsHex string, height int64, err error) {
 	var params = rpc.GetTransaction_Params{Tx_Hashes: []string{txid}}
 	var result rpc.GetTransaction_Result
 
@@ -306,6 +406,7 @@ func getTXID(txid, endpoint string) (txidAsHex string, err error) {
 	}
 
 	txidAsHex = res[0]
+	height = result.Txs[0].Block_Height
 
 	return
 }
@@ -361,19 +462,67 @@ func getContractCode(scid, endpoint string) (code string, err error) {
 	return
 }
 
-// Transfer for executing TELA smart contract actions with DERO walletapi
-func transfer(wallet *walletapi.Wallet_Disk, ringsize uint64, args rpc.Arguments) (txid string, err error) {
-	if wallet == nil {
-		err = fmt.Errorf("no wallet for transfer")
+// Get the code of a smart contract at height from endpoint
+func getContractCodeAtHeight(height int64, scid, endpoint string) (code string, err error) {
+	var params = rpc.GetSC_Params{SCID: scid, Variables: false, Code: true, TopoHeight: height}
+	var result rpc.GetSC_Result
+
+	tela.client.WS, _, err = websocket.DefaultDialer.Dial("ws://"+endpoint+"/ws", nil)
+	if err != nil {
 		return
 	}
 
-	network := "mainnet"
+	input_output := rwc.New(tela.client.WS)
+	tela.client.RPC = jrpc2.NewClient(channel.RawJSON(input_output, input_output), nil)
+
+	err = tela.client.RPC.CallResult(context.Background(), "DERO.GetSC", params, &result)
+	if err != nil {
+		return
+	}
+
+	if result.Code == "" {
+		err = fmt.Errorf("code is empty string")
+		return
+	}
+
+	code = result.Code
+
+	return
+}
+
+// Get a default DERO transfer address for the network defined by globals.Arguments --testnet and --simulator flags
+func GetDefaultNetworkAddress() (network, destination string) {
+	network = "mainnet"
 	if b, ok := globals.Arguments["--testnet"].(bool); ok && b {
 		network = "testnet"
 		if b, ok := globals.Arguments["--simulator"].(bool); ok && b {
 			network = "simulator"
 		}
+	}
+
+	switch network {
+	case "simulator":
+		destination = "deto1qyvyeyzrcm2fzf6kyq7egkes2ufgny5xn77y6typhfx9s7w3mvyd5qqynr5hx"
+	case "testnet":
+		destination = "deto1qy0ehnqjpr0wxqnknyc66du2fsxyktppkr8m8e6jvplp954klfjz2qqdzcd8p"
+	default:
+		destination = "dero1qykyta6ntpd27nl0yq4xtzaf4ls6p5e9pqu0k2x4x3pqq5xavjsdxqgny8270"
+	}
+
+	return
+}
+
+// transfer0 is used for executing TELA smart contract functions without a DEROVALUE or ASSETVALUE, it creates a transfer of 0 to a default address for the network
+func transfer0(wallet *walletapi.Wallet_Disk, ringsize uint64, args rpc.Arguments) (txid string, err error) {
+	return Transfer(wallet, ringsize, nil, args)
+}
+
+// Transfer is used for executing TELA smart contract actions with DERO walletapi, if nil transfers is passed
+// it initializes a transfer of 0 to a default address for the network using GetDefaultNetworkAddress()
+func Transfer(wallet *walletapi.Wallet_Disk, ringsize uint64, transfers []rpc.Transfer, args rpc.Arguments) (txid string, err error) {
+	if wallet == nil {
+		err = fmt.Errorf("no wallet for transfer")
+		return
 	}
 
 	if ringsize < 2 {
@@ -382,18 +531,20 @@ func transfer(wallet *walletapi.Wallet_Disk, ringsize uint64, args rpc.Arguments
 		ringsize = 128
 	}
 
-	// Initialize a DERO transfer
-	var dest string
-	switch network {
-	case "simulator":
-		dest = "deto1qyvyeyzrcm2fzf6kyq7egkes2ufgny5xn77y6typhfx9s7w3mvyd5qqynr5hx"
-	case "testnet":
-		dest = "deto1qy0ehnqjpr0wxqnknyc66du2fsxyktppkr8m8e6jvplp954klfjz2qqdzcd8p"
-	default:
-		dest = "dero1qykyta6ntpd27nl0yq4xtzaf4ls6p5e9pqu0k2x4x3pqq5xavjsdxqgny8270"
+	// Initialize a DERO transfer if none is provided
+	if transfers == nil || len(transfers) < 1 {
+		_, dest := GetDefaultNetworkAddress()
+		transfers = []rpc.Transfer{{Destination: dest, Amount: 0}}
 	}
 
-	transfers := []rpc.Transfer{{Destination: dest, Amount: 0}}
+	// Validate all transfer addresses
+	for i, t := range transfers {
+		_, err = globals.ParseValidateAddress(t.Destination)
+		if err != nil {
+			err = fmt.Errorf("invalid transfer address %d: %s", i, err)
+			return
+		}
+	}
 
 	var code string
 	if c, ok := args.Value(rpc.SCCODE, rpc.DataString).(string); ok {
@@ -435,12 +586,12 @@ func transfer(wallet *walletapi.Wallet_Disk, ringsize uint64, args rpc.Arguments
 
 	tx, err := wallet.TransferPayload0(transfers, ringsize, false, args, gasResult.GasStorage, false)
 	if err != nil {
-		err = fmt.Errorf("contract install build error: %s", err)
+		err = fmt.Errorf("transfer build error: %s", err)
 		return
 	}
 
 	if err = wallet.SendTransaction(tx); err != nil {
-		err = fmt.Errorf("contract install dispatch error: %s", err)
+		err = fmt.Errorf("transfer dispatch error: %s", err)
 		return
 	}
 
@@ -449,21 +600,21 @@ func transfer(wallet *walletapi.Wallet_Disk, ringsize uint64, args rpc.Arguments
 	return
 }
 
-// Clone a TELA-DOC scid to path from endpoint
+// Clone a TELA-DOC SCID to path from endpoint
 func cloneDOC(scid, docNum, path, endpoint string) (clone Cloning, err error) {
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid DOC SCID: %s", scid)
 		return
 	}
 
-	var scCode string
-	scCode, err = getContractCode(scid, endpoint)
+	var code string
+	code, err = getContractCode(scid, endpoint)
 	if err != nil {
 		err = fmt.Errorf("could not get SC code from %s: %s", scid, err)
 		return
 	}
 
-	_, err = EqualSmartContracts(TELA_DOC_1, scCode)
+	_, _, err = ValidDOCVersion(code)
 	if err != nil {
 		err = fmt.Errorf("scid does not parse as TELA-DOC-1: %s", err)
 		return
@@ -522,7 +673,7 @@ func cloneDOC(scid, docNum, path, endpoint string) (clone Cloning, err error) {
 		return
 	}
 
-	err = parseAndSaveTELADoc(filePath, scCode, docType)
+	err = parseAndSaveTELADoc(filePath, code, docType)
 	if err != nil {
 		err = fmt.Errorf("error saving %s: %s", fileName, err)
 		return
@@ -532,15 +683,9 @@ func cloneDOC(scid, docNum, path, endpoint string) (clone Cloning, err error) {
 }
 
 // Clone a TELA-INDEX SCID to path from endpoint creating all DOCs embedded within the INDEX
-func cloneINDEX(scid, path, endpoint string) (clone Cloning, err error) {
+func cloneINDEX(scid, dURL, path, endpoint string) (clone Cloning, err error) {
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid INDEX SCID: %s", scid)
-		return
-	}
-
-	dURL, err := getContractVar(scid, HEADER_DURL.Trim(), endpoint)
-	if err != nil {
-		err = fmt.Errorf("could not get dURL from %s: %s", scid, err)
 		return
 	}
 
@@ -566,8 +711,13 @@ func cloneINDEX(scid, path, endpoint string) (clone Cloning, err error) {
 		return
 	}
 
+	var modTag string // mods store can be empty so don't return error
+	if storedMods, err := getContractVar(scid, "mods", endpoint); err == nil {
+		modTag = storedMods
+	}
+
 	// Only clone contracts matching TELA standard
-	sc, err := EqualSmartContracts(TELA_INDEX_1, code)
+	sc, _, err := ValidINDEXVersion(code, modTag)
 	if err != nil {
 		err = fmt.Errorf("%s does not parse as TELA-INDEX-1: %s", tagErr, err)
 		return
@@ -580,15 +730,24 @@ func cloneINDEX(scid, path, endpoint string) (clone Cloning, err error) {
 	// Path to entrypoint
 	servePath := ""
 
-	// Parse INDEX SC for valid DOCs
-	entrypoint, servePath, err = parseAndCloneINDEXForDOCs(sc, basePath, endpoint)
-	if err != nil {
-		// If all of the files were not cloned successfully, any residual files are removed if they did not exist already
-		err = fmt.Errorf("%s %s", tagErr, err)
-		if !strings.Contains(err.Error(), "already exists") {
-			os.RemoveAll(basePath)
+	// If INDEX contains DocShards to be constructed
+	if strings.Contains(dURL, TAG_DOC_SHARDS) {
+		err = cloneDocShards(sc, basePath, endpoint)
+		if err != nil {
+			err = fmt.Errorf("%s %s", tagErr, err)
+			return
 		}
-		return
+	} else {
+		// Parse INDEX SC for valid DOCs
+		entrypoint, servePath, err = parseAndCloneINDEXForDOCs(sc, 0, basePath, endpoint)
+		if err != nil {
+			// If all of the files were not cloned successfully, any residual files are removed if they did not exist already
+			err = fmt.Errorf("%s %s", tagErr, err)
+			if !strings.Contains(err.Error(), "already exists") {
+				os.RemoveAll(basePath)
+			}
+			return
+		}
 	}
 
 	clone.DURL = dURL
@@ -599,14 +758,135 @@ func cloneINDEX(scid, path, endpoint string) (clone Cloning, err error) {
 	return
 }
 
-// Clone a TELA-INDEX SCID at commit TXID to path from endpoint creating all DOCs embedded within the INDEX at that commit
-func cloneINDEXAtCommit(scid, txid, path, endpoint string) (clone Cloning, err error) {
+// cloneDocShards takes a TELA-INDEX SC and parses its DOCs, creating them as DocShards which get recreated as a single file
+func cloneDocShards(sc dvm.SmartContract, basePath, endpoint string) (err error) {
+	docShards, recreate, err := parseDocShards(sc, basePath, endpoint)
+	if err != nil {
+		err = fmt.Errorf("could not clone DocShards: %s", err)
+		return
+	}
+
+	err = ConstructFromShards(docShards, recreate, basePath)
+	if err != nil {
+		err = fmt.Errorf("could not construct DocShards: %s", err)
+		return
+	}
+
+	return
+}
+
+// ConstructFromShards takes DocShards and recreates them as a file at basePath,
+// CreateShardFiles can be used to create the shard files formatted for ConstructFromShards
+func ConstructFromShards(docShards [][]byte, recreate, basePath string) (err error) {
+	err = os.MkdirAll(basePath, os.ModePerm)
+	if err != nil {
+		return
+	}
+
+	filePath := filepath.Join(basePath, recreate)
+	if _, err = os.Stat(filePath); !os.IsNotExist(err) {
+		err = fmt.Errorf("file %s already exists", filePath)
+		return
+	}
+
+	logger.Printf("[TELA] Constructing %s\n", recreate)
+
+	var file *os.File
+	file, err = os.Create(filePath)
+	if err != nil {
+		err = fmt.Errorf("failed to create %s: %s", recreate, err)
+		return
+	}
+	defer file.Close()
+
+	for i, code := range docShards {
+		_, err = file.Write(code)
+		if err != nil {
+			err = fmt.Errorf("failed to write shard %d to %s: %s", i+1, recreate, err)
+			return
+		}
+	}
+
+	return
+}
+
+// CreateShardFiles takes a source file and creates DocShard files sized and formatted for installing as TELA DOCs,
+// the package uses ConstructFromShards to re-build the DocShards as its original file when cloning,
+// output files are formatted as "name-#.ext" in the source file's directory
+func CreateShardFiles(filePath string) (err error) {
+	var content []byte
+	content, err = os.ReadFile(filePath)
+	if err != nil {
+		err = fmt.Errorf("failed to read file: %s", err)
+		return
+	}
+
+	fileName := filepath.Base(filePath)
+	for _, r := range string(content) {
+		if r > unicode.MaxASCII {
+			err = fmt.Errorf("cannot shard file %s: '%c'", fileName, r)
+			return
+		}
+	}
+
+	shardSize := int(MAX_DOC_CODE_SIZE*1000) - 500
+
+	totalShards := (len(content) + shardSize - 1) / shardSize
+
+	newFileName := func(i int, name, ext string) string {
+		return fmt.Sprintf("%s-%d%s", strings.TrimSuffix(name, ext), i, ext)
+	}
+
+	fileDir := filepath.Dir(filePath)
+	ext := filepath.Ext(fileName)
+
+	// Check no shard files already exist
+	for i := 1; i <= totalShards; i++ {
+		name := newFileName(int(i), fileName, ext)
+		newPath := filepath.Join(fileDir, name)
+		if _, err = os.Stat(newPath); !os.IsNotExist(err) {
+			err = fmt.Errorf("file %s already exists", newPath)
+			return
+		}
+	}
+
+	count := 0
+	fileEnd := len(content)
+	for start := 0; start < fileEnd; start += shardSize {
+		end := start + shardSize
+		if end > fileEnd {
+			end = fileEnd
+		}
+
+		count++
+		name := newFileName(count, fileName, ext)
+
+		var shardFile *os.File
+		shardFile, err = os.Create(filepath.Join(fileDir, name))
+		if err != nil {
+			err = fmt.Errorf("failed to create %s: %s", name, err)
+			return
+		}
+		defer shardFile.Close()
+
+		if _, err = shardFile.Write(content[start:end]); err != nil {
+			err = fmt.Errorf("failed to write %s: %s", name, err)
+			return
+		}
+	}
+
+	return
+}
+
+// Clone a TELA-INDEX SCID at commit TXID to path from endpoint creating all DOCs embedded within the INDEX at the commit height
+func cloneINDEXAtCommit(height int64, scid, txid, path, endpoint string) (clone Cloning, err error) {
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid INDEX SCID: %s", scid)
 		return
 	}
 
-	if len(txid) != 64 {
+	// TXID only needed on first INDEX
+	if height == 0 && len(txid) != 64 {
 		err = fmt.Errorf("invalid INDEX commit TXID: %s", txid)
 		return
 	}
@@ -619,20 +899,36 @@ func cloneINDEXAtCommit(scid, txid, path, endpoint string) (clone Cloning, err e
 
 	tagErr := fmt.Sprintf("cloning %s@%s was not successful:", dURL, txid)
 
-	txidAsHex, err := getTXID(txid, endpoint)
-	if err != nil {
-		err = fmt.Errorf("%s could not get TXID: %s", tagErr, err)
-		return
-	}
+	var code, modTag string
+	if height > 0 {
+		// If more then one INDEX embed, use height from commit TXID to get docCode at commit height
+		code, err = getContractCodeAtHeight(height, scid, endpoint)
+		if err != nil {
+			return
+		}
 
-	code, err := extractCodeFromTXID(txidAsHex)
-	if err != nil {
-		err = fmt.Errorf("%s could not get SC code: %s", tagErr, err)
-		return
+		modTag = extractModTagFromCode(code)
+	} else {
+		// First INDEX get commit height and code from TXID
+		txidAsHex, commitHeight, errr := getTXID(txid, endpoint)
+		if errr != nil {
+			err = fmt.Errorf("%s could not get TXID: %s", tagErr, errr)
+			return
+		}
+
+		height = commitHeight
+
+		code, err = extractCodeFromTXID(txidAsHex)
+		if err != nil {
+			err = fmt.Errorf("%s could not get SC code: %s", tagErr, err)
+			return
+		}
+
+		modTag = extractModTagFromCode(code)
 	}
 
 	// Only clone contracts matching TELA standard
-	sc, err := EqualSmartContracts(TELA_INDEX_1, code)
+	sc, _, err := ValidINDEXVersion(code, modTag)
 	if err != nil {
 		err = fmt.Errorf("%s does not parse as TELA-INDEX-1: %s", tagErr, err)
 		return
@@ -640,20 +936,29 @@ func cloneINDEXAtCommit(scid, txid, path, endpoint string) (clone Cloning, err e
 
 	// TELA-INDEX entrypoint, this will be nameHdr of DOC1
 	entrypoint := ""
-	// Path when file will be stored
+	// Path where file will be stored
 	basePath := filepath.Join(path, dURL)
 	// Path to entrypoint
 	servePath := ""
 
-	// Parse INDEX SC for valid DOCs
-	entrypoint, servePath, err = parseAndCloneINDEXForDOCs(sc, basePath, endpoint)
-	if err != nil {
-		// If all of the files were not cloned successfully, any residual files are removed if they did not exist already
-		err = fmt.Errorf("%s %s", tagErr, err)
-		if !strings.Contains(err.Error(), "already exists") {
-			os.RemoveAll(basePath)
+	// If INDEX contains DocShards to be constructed
+	if strings.Contains(dURL, TAG_DOC_SHARDS) {
+		err = cloneDocShards(sc, basePath, endpoint)
+		if err != nil {
+			err = fmt.Errorf("%s %s", tagErr, err)
+			return
 		}
-		return
+	} else {
+		// Parse INDEX SC for valid DOCs
+		entrypoint, servePath, err = parseAndCloneINDEXForDOCs(sc, height, basePath, endpoint)
+		if err != nil {
+			// If all of the files were not cloned successfully, any residual files are removed if they did not exist already
+			err = fmt.Errorf("%s %s", tagErr, err)
+			if !strings.Contains(err.Error(), "already exists") {
+				os.RemoveAll(basePath)
+			}
+			return
+		}
 	}
 
 	clone.DURL = dURL
@@ -679,18 +984,19 @@ func Clone(scid, endpoint string) (err error) {
 		}
 	}
 
+	dURL, err := getContractVar(scid, HEADER_DURL.Trim(), endpoint)
+	if err != nil {
+		err = fmt.Errorf("could not get dURL from %s: %s", scid, err)
+		return
+	}
+
 	path := tela.path.clone()
 
 	switch valid {
 	case "INDEX":
-		_, err = cloneINDEX(scid, path, endpoint)
+		_, err = cloneINDEX(scid, dURL, path, endpoint)
 	case "DOC":
 		// Store DOCs in respective dURL directories
-		dURL, errr := getContractVar(scid, HEADER_DURL.Trim(), endpoint)
-		if errr != nil {
-			err = fmt.Errorf("could not get DOC dURL from %s: %s", scid, errr)
-			return
-		}
 		_, err = cloneDOC(scid, "", filepath.Join(path, dURL), endpoint)
 	default:
 		err = fmt.Errorf("could not validate %s as TELA INDEX or DOC", scid)
@@ -708,20 +1014,34 @@ func CloneAtCommit(scid, txid, endpoint string) (err error) {
 
 	path := tela.path.clone()
 
-	_, err = cloneINDEXAtCommit(scid, txid, path, endpoint)
+	_, err = cloneINDEXAtCommit(0, scid, txid, path, endpoint)
+
+	return
+}
+
+// Before serving check if dURL has any known tags that indicate it should not be served
+func checkIfAbleToServe(scid, endpoint string) (dURL string, err error) {
+	dURL, err = getContractVar(scid, HEADER_DURL.Trim(), endpoint)
+	if err != nil {
+		err = fmt.Errorf("could not get INDEX dURL from %s: %s", scid, err)
+		return
+	}
+
+	if strings.HasSuffix(dURL, TAG_LIBRARY) {
+		err = fmt.Errorf("%q is a library and cannot be served", dURL)
+		return
+	}
+
+	if strings.Contains(dURL, TAG_DOC_SHARDS) {
+		err = fmt.Errorf("%q is DocShards and cannot be served", dURL)
+		return
+	}
 
 	return
 }
 
 // serveTELA serves cloned TELA content returning a link to the running TELA server if successful
 func serveTELA(scid string, clone Cloning) (link string, err error) {
-	if strings.HasSuffix(clone.DURL, TAG_LIBRARY) {
-		os.RemoveAll(clone.BasePath)
-		err = fmt.Errorf("%s is a library", clone.DURL)
-		return
-	}
-
-	// INDEX and DOCs are valid, get ready to serve
 	server, found := FindOpenPort()
 	if !found {
 		os.RemoveAll(clone.BasePath)
@@ -768,7 +1088,12 @@ func ServeTELA(scid, endpoint string) (link string, err error) {
 	tela.Lock()
 	defer tela.Unlock()
 
-	clone, err := cloneINDEX(scid, tela.path.tela(), endpoint)
+	dURL, err := checkIfAbleToServe(scid, endpoint)
+	if err != nil {
+		return
+	}
+
+	clone, err := cloneINDEX(scid, dURL, tela.path.tela(), endpoint)
 	if err != nil {
 		os.RemoveAll(clone.BasePath)
 		return
@@ -788,7 +1113,12 @@ func ServeAtCommit(scid, txid, endpoint string) (link string, err error) {
 		return
 	}
 
-	clone, err := cloneINDEXAtCommit(scid, txid, tela.path.tela(), endpoint)
+	_, err = checkIfAbleToServe(scid, endpoint)
+	if err != nil {
+		return
+	}
+
+	clone, err := cloneINDEXAtCommit(0, scid, txid, tela.path.tela(), endpoint)
 	if err != nil {
 		os.RemoveAll(clone.BasePath)
 		return
@@ -929,6 +1259,14 @@ func GetPath() string {
 	return tela.path.tela()
 }
 
+// Get the current clone datashard storage path
+func GetClonePath() string {
+	tela.RLock()
+	defer tela.RUnlock()
+
+	return tela.path.clone()
+}
+
 // SetShardPath can be used to set a custom path for TELA DOC storage,
 // TELA will remove all its files from the /tela directory when servers are Shutdown
 func SetShardPath(path string) (err error) {
@@ -1030,7 +1368,16 @@ func NewInstallArgs(params interface{}) (args rpc.Arguments, err error) {
 	var code string
 	switch h := params.(type) {
 	case *INDEX:
-		code, err = ParseHeaders(TELA_INDEX_1, h)
+		indexTemplate := TELA_INDEX_1
+		if h.Mods != "" {
+			_, indexTemplate, err = Mods.InjectMODs(h.Mods, indexTemplate)
+			if err != nil {
+				err = fmt.Errorf("could not inject MODs: %s", err)
+				return
+			}
+		}
+
+		code, err = ParseHeaders(indexTemplate, h)
 		if err != nil {
 			return
 		}
@@ -1077,18 +1424,37 @@ func Installer(wallet *walletapi.Wallet_Disk, ringsize uint64, params interface{
 		return
 	}
 
-	return transfer(wallet, ringsize, args)
+	return transfer0(wallet, ringsize, args)
 }
 
 // Create arguments for INDEX SC UpdateCode call
 func NewUpdateArgs(params interface{}) (args rpc.Arguments, err error) {
-	var code, scid string
+	var version *Version
+	var code, scid, mods string
 	switch h := params.(type) {
 	case *INDEX:
-		scid = h.SCID
-		code, err = ParseHeaders(TELA_INDEX_1, h)
+		indexTemplate := TELA_INDEX_1
+		if h.Mods != "" {
+			_, indexTemplate, err = Mods.InjectMODs(h.Mods, indexTemplate)
+			if err != nil {
+				err = fmt.Errorf("could not inject MODs: %s", err)
+				return
+			}
+		}
+
+		code, err = ParseHeaders(indexTemplate, h)
 		if err != nil {
 			return
+		}
+
+		scid = h.SCID
+		mods = h.Mods
+		if h.SCVersion == nil {
+			// Use latest version if not provided
+			latestV := GetLatestContractVersion(false)
+			version = &latestV
+		} else {
+			version = h.SCVersion
 		}
 	default:
 		err = fmt.Errorf("expecting params to be *INDEX for update and got: %T", params)
@@ -1103,10 +1469,18 @@ func NewUpdateArgs(params interface{}) (args rpc.Arguments, err error) {
 		rpc.Argument{Name: rpc.SCACTION, DataType: rpc.DataUint64, Value: uint64(rpc.SC_CALL)},
 	}
 
+	// Handle any version specific params that need to be added
+	switch {
+	case version.Equal(Version{1, 1, 0}):
+		args = append(args, rpc.Argument{Name: "mods", DataType: rpc.DataString, Value: mods})
+	default:
+		// nothing, use 1.0.0
+	}
+
 	return
 }
 
-// Update a TELA INDEX SC with DERO walletapi
+// Update a TELA INDEX SC with DERO walletapi, requires wallet to be owner of SC
 func Updater(wallet *walletapi.Wallet_Disk, params interface{}) (txid string, err error) {
 	if wallet == nil {
 		err = fmt.Errorf("no wallet for TELA Updater")
@@ -1119,7 +1493,7 @@ func Updater(wallet *walletapi.Wallet_Disk, params interface{}) (txid string, er
 		return
 	}
 
-	return transfer(wallet, 2, args)
+	return transfer0(wallet, 2, args)
 }
 
 // Create arguments for TELA Rate SC call
@@ -1141,7 +1515,7 @@ func NewRateArgs(scid string, rating uint64) (args rpc.Arguments, err error) {
 	return
 }
 
-// Rate a TELA SC positively (rating > 49) or negatively (rating < 50) with DERO walletapi
+// Rate a TELA SC positively (rating > 49) or negatively (rating < 50) with DERO walletapi, the transaction will use ringsize of 2
 func Rate(wallet *walletapi.Wallet_Disk, scid string, rating uint64) (txid string, err error) {
 	if wallet == nil {
 		err = fmt.Errorf("no wallet for TELA Rate")
@@ -1154,7 +1528,132 @@ func Rate(wallet *walletapi.Wallet_Disk, scid string, rating uint64) (txid strin
 		return
 	}
 
-	return transfer(wallet, 2, args)
+	return transfer0(wallet, 2, args)
+}
+
+// Check if key is stored in SCID at endpoint
+func KeyExists(scid, key, endpoint string) (variable string, exists bool, err error) {
+	var vars map[string]interface{}
+	vars, err = getContractVars(scid, endpoint)
+	if err != nil {
+		return
+	}
+
+	for k, val := range vars {
+		if k == key {
+			exists = true
+			switch v := val.(type) {
+			case string:
+				variable = decodeHexString(v)
+			case uint64:
+				variable = fmt.Sprintf("%d", v)
+			case float64:
+				variable = fmt.Sprintf("%.0f", v)
+			default:
+				variable = fmt.Sprintf("%v", v)
+			}
+			break
+		}
+	}
+
+	return
+}
+
+// Check if prefixed key is stored in SCID at endpoint
+func KeyPrefixExists(scid, prefix, endpoint string) (key, variable string, exists bool, err error) {
+	var vars map[string]interface{}
+	vars, err = getContractVars(scid, endpoint)
+	if err != nil {
+		return
+	}
+
+	for k, val := range vars {
+		if strings.HasPrefix(k, prefix) {
+			exists = true
+			key = k
+			switch v := val.(type) {
+			case string:
+				variable = decodeHexString(v)
+			case uint64:
+				variable = fmt.Sprintf("%d", v)
+			case float64:
+				variable = fmt.Sprintf("%.0f", v)
+			default:
+				variable = fmt.Sprintf("%v", v)
+			}
+
+			break
+		}
+	}
+
+	return
+}
+
+// Create arguments for TELA SetVar SC call
+func NewSetVarArgs(scid, key, value string) (args rpc.Arguments, err error) {
+	if len(key) > 256 {
+		err = fmt.Errorf("key cannot be larger than 256 characters")
+		return
+	}
+
+	args = rpc.Arguments{
+		rpc.Argument{Name: "entrypoint", DataType: rpc.DataString, Value: "SetVar"},
+		rpc.Argument{Name: "k", DataType: rpc.DataString, Value: key},
+		rpc.Argument{Name: "v", DataType: rpc.DataString, Value: value},
+		rpc.Argument{Name: rpc.SCID, DataType: rpc.DataHash, Value: crypto.HashHexToHash(scid)},
+		rpc.Argument{Name: rpc.SCACTION, DataType: rpc.DataUint64, Value: uint64(rpc.SC_CALL)},
+	}
+
+	return
+}
+
+// Set a K/V store on a TELA SC
+func SetVar(wallet *walletapi.Wallet_Disk, scid, key, value string) (txid string, err error) {
+	if wallet == nil {
+		err = fmt.Errorf("no wallet for TELA SetVar")
+		return
+	}
+
+	var args rpc.Arguments
+	args, err = NewSetVarArgs(scid, key, value)
+	if err != nil {
+		return
+	}
+
+	return transfer0(wallet, 2, args)
+}
+
+// Create arguments for TELA DeleteVar SC call
+func NewDeleteVarArgs(scid, key string) (args rpc.Arguments, err error) {
+	if len(key) > 256 {
+		err = fmt.Errorf("invalid key")
+		return
+	}
+
+	args = rpc.Arguments{
+		rpc.Argument{Name: "entrypoint", DataType: rpc.DataString, Value: "DeleteVar"},
+		rpc.Argument{Name: "k", DataType: rpc.DataString, Value: key},
+		rpc.Argument{Name: rpc.SCID, DataType: rpc.DataHash, Value: crypto.HashHexToHash(scid)},
+		rpc.Argument{Name: rpc.SCACTION, DataType: rpc.DataUint64, Value: uint64(rpc.SC_CALL)},
+	}
+
+	return
+}
+
+// Delete a K/V store from a TELA SC, requires wallet to be owner of SC
+func DeleteVar(wallet *walletapi.Wallet_Disk, scid, key string) (txid string, err error) {
+	if wallet == nil {
+		err = fmt.Errorf("no wallet for TELA DeleteVar")
+		return
+	}
+
+	var args rpc.Arguments
+	args, err = NewDeleteVarArgs(scid, key)
+	if err != nil {
+		return
+	}
+
+	return transfer0(wallet, 2, args)
 }
 
 // Get the rating of a TELA scid from endpoint. Result is all individual ratings, likes and dislikes and the average rating category.
@@ -1172,10 +1671,16 @@ func GetRating(scid, endpoint string, height uint64) (ratings Rating_Result, err
 		return
 	}
 
+	var modTag string
+	storedMods, ok := vars["mods"].(string)
+	if ok {
+		modTag = decodeHexString(storedMods)
+	}
+
 	code := decodeHexString(c)
-	_, err = EqualSmartContracts(TELA_INDEX_1, code)
+	_, _, err = ValidINDEXVersion(code, modTag)
 	if err != nil {
-		_, err = EqualSmartContracts(TELA_DOC_1, code)
+		_, _, err = ValidDOCVersion(code)
 		if err != nil {
 			err = fmt.Errorf("scid does not parse as a TELA SC: %s", err)
 			return
@@ -1251,7 +1756,7 @@ func GetDOCInfo(scid, endpoint string) (doc DOC, err error) {
 	}
 
 	code := decodeHexString(c)
-	_, err = EqualSmartContracts(TELA_DOC_1, code)
+	_, version, err := ValidDOCVersion(code)
 	if err != nil {
 		err = fmt.Errorf("scid does not parse as TELA-DOC-1: %s", err)
 		return
@@ -1315,12 +1820,13 @@ func GetDOCInfo(scid, endpoint string) (doc DOC, err error) {
 	}
 
 	doc = DOC{
-		DocType: docType,
-		Code:    code,
-		SubDir:  subDir,
-		SCID:    scid,
-		Author:  author,
-		DURL:    dURL,
+		DocType:   docType,
+		Code:      code,
+		SubDir:    subDir,
+		SCID:      scid,
+		Author:    author,
+		DURL:      dURL,
+		SCVersion: &version,
 		Signature: Signature{
 			CheckC: checkC,
 			CheckS: checkS,
@@ -1349,8 +1855,14 @@ func GetINDEXInfo(scid, endpoint string) (index INDEX, err error) {
 		return
 	}
 
+	var modTag string
+	storedMods, ok := vars["mods"].(string)
+	if ok {
+		modTag = decodeHexString(storedMods)
+	}
+
 	code := decodeHexString(c)
-	_, err = EqualSmartContracts(TELA_INDEX_1, code)
+	sc, version, err := ValidINDEXVersion(code, modTag)
 	if err != nil {
 		err = fmt.Errorf("scid does not parse as TELA-INDEX-1: %s", err)
 		return
@@ -1387,16 +1899,16 @@ func GetINDEXInfo(scid, endpoint string) (index INDEX, err error) {
 	}
 
 	// Get all DOCs from contract code
-	docs, err := ParseINDEXForDOCs(code)
-	if err != nil {
-		return
-	}
+	docs := parseINDEXForDOCs(sc)
 
 	index = INDEX{
-		SCID:   scid,
-		Author: author,
-		DURL:   dURL,
-		DOCs:   docs,
+		Mods:      modTag,
+		SCID:      scid,
+		Author:    author,
+		DURL:      dURL,
+		DOCs:      docs,
+		SCVersion: &version,
+		SC:        sc,
 		Headers: Headers{
 			NameHdr:  nameHdr,
 			DescrHdr: descrHdr,
