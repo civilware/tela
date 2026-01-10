@@ -1716,10 +1716,26 @@ func findDocShardFiles(filePath string) (docShards [][]byte, recreate, compressi
 
 	prefix := fmt.Sprintf("%s-", split[0])
 
+	// Determine if compressed
+	if tela.IsCompressedExt(ext) {
+		compression = ext
+		origExt := filepath.Ext(strings.TrimSuffix(fileName, ext))
+		recreate = fmt.Sprintf("%s%s", split[0], origExt)
+	} else {
+		recreate = fmt.Sprintf("%s%s", split[0], ext)
+	}
+
 	files, err := os.ReadDir(fileDir)
 	if err != nil {
 		return
 	}
+
+	type shardData struct {
+		index int
+		data  []byte
+	}
+
+	var shards []shardData
 
 	for _, file := range files {
 		if file.IsDir() {
@@ -1728,6 +1744,23 @@ func findDocShardFiles(filePath string) (docShards [][]byte, recreate, compressi
 
 		shardFileName := file.Name()
 		if strings.HasPrefix(shardFileName, prefix) && filepath.Ext(shardFileName) == ext {
+			// Parse the shard number
+			baseName := strings.TrimSuffix(shardFileName, ext)  // remove compression ext, e.g., .gz
+			if compression != "" {
+				// If compressed, also remove the original ext
+				origExt := filepath.Ext(strings.TrimSuffix(fileName, ext))
+				baseName = strings.TrimSuffix(baseName, origExt)
+			}
+			shardSplit := strings.Split(baseName, "-")
+			if len(shardSplit) < 2 {
+				continue
+			}
+			shardNumStr := shardSplit[len(shardSplit)-1]
+			shardNum, parseErr := strconv.Atoi(shardNumStr)
+			if parseErr != nil {
+				continue
+			}
+
 			shardFilePath := filepath.Join(fileDir, shardFileName)
 			shard, errr := os.ReadFile(shardFilePath)
 			if errr != nil {
@@ -1735,17 +1768,19 @@ func findDocShardFiles(filePath string) (docShards [][]byte, recreate, compressi
 				return
 			}
 
-			docShards = append(docShards, shard)
+			shards = append(shards, shardData{index: shardNum, data: shard})
 		}
 	}
 
-	if tela.IsCompressedExt(ext) {
-		// Recreate the original file if shards are compressed
-		compression = ext
-		ext = filepath.Ext(strings.TrimSuffix(fileName, compression))
-	}
+	// Sort shards by index
+	sort.Slice(shards, func(i, j int) bool {
+		return shards[i].index < shards[j].index
+	})
 
-	recreate = fmt.Sprintf("%s%s", split[0], ext)
+	// Extract sorted data
+	for _, s := range shards {
+		docShards = append(docShards, s.data)
+	}
 
 	return
 }
