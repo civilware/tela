@@ -1578,6 +1578,22 @@ func main() {
 				continue
 			}
 
+			// Check if file looks like a DocShard but dURL doesn't indicate it's meant to be a shard
+			baseName := strings.TrimSuffix(fileName, ext)
+			if strings.Contains(baseName, "-") {
+				parts := strings.Split(baseName, "-")
+				if len(parts) > 1 {
+					lastPart := parts[len(parts)-1]
+					if _, err := strconv.Atoi(lastPart); err == nil {
+						// If filename looks like a shard but dURL doesn't have .shard, block it
+						if !strings.HasSuffix(headers[tela.HEADER_DURL], tela.TAG_DOC_SHARD) {
+							logger.Errorf("[%s] %q appears to be a DocShard file. Add '.shard' to the dURL when installing shard DOCs.\n", appName, fileName)
+							continue
+						}
+					}
+				}
+			}
+
 			var subDir string
 			line, err := app.readLine("Enter DOC subDir", "")
 			if err != nil {
