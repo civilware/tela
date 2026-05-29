@@ -779,7 +779,7 @@ func main() {
 					continue
 				}
 			} else {
-				yes, err := app.readYesNo("Compress file data")
+				compression, err = app.readCompression("Compression (none/gzip/brotli)")
 				if err != nil {
 					if readError(err) {
 						return
@@ -787,14 +787,7 @@ func main() {
 					continue
 				}
 
-				if !yes {
-					totalShards, _ = tela.GetTotalShards(fileData)
-					if totalShards < 2 {
-						logger.Errorf("[%s] %q is smaller than shard size\n", appName, args[0])
-						continue
-					}
-				} else {
-					compression = tela.COMPRESSION_GZIP
+				if compression != "" {
 					compressed, err := tela.Compress(fileData, compression)
 					if err != nil {
 						logger.Errorf("[%s] Could not compress file data: %s\n", appName, err)
@@ -806,6 +799,12 @@ func main() {
 					totalShards, _ = tela.GetTotalShards(fileData)
 					if totalShards < 2 {
 						logger.Errorf("[%s] %q is smaller than shard size when compressed\n", appName, args[0])
+						continue
+					}
+				} else {
+					totalShards, _ = tela.GetTotalShards(fileData)
+					if totalShards < 2 {
+						logger.Errorf("[%s] %q is smaller than shard size\n", appName, args[0])
 						continue
 					}
 				}
@@ -1606,7 +1605,7 @@ func main() {
 			subDir = line
 
 			if compression == "" && !strings.HasSuffix(headers[tela.HEADER_DURL], tela.TAG_DOC_SHARD) {
-				yes, err := app.readYesNo("Compress file data")
+				compression, err = app.readCompression("Compression (none/gzip/brotli)")
 				if err != nil {
 					if readError(err) {
 						return
@@ -1614,8 +1613,7 @@ func main() {
 					continue
 				}
 
-				if yes {
-					compression = tela.COMPRESSION_GZIP
+				if compression != "" {
 					compressed, err := tela.Compress(data, compression)
 					if err != nil {
 						logger.Errorf("[%s] Could not compress file data: %s\n", appName, err)

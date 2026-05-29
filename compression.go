@@ -8,15 +8,19 @@ import (
 	"strings"
 
 	"compress/gzip"
+
+	"github.com/andybalholm/brotli"
 )
 
 const (
-	COMPRESSION_GZIP = ".gz"
+	COMPRESSION_GZIP   = ".gz"
+	COMPRESSION_BROTLI = ".br"
 )
 
 // Compression formats this package will use
 var compressionFormats = []string{
 	COMPRESSION_GZIP,
+	COMPRESSION_BROTLI,
 }
 
 // TrimCompressedExt removes known compression extensions from the filename
@@ -55,6 +59,11 @@ func Decompress(data []byte, compression string) (result []byte, err error) {
 		if err != nil {
 			return
 		}
+	case COMPRESSION_BROTLI:
+		result, err = decompressBrotli(data)
+		if err != nil {
+			return
+		}
 	case "":
 		result = data
 	default:
@@ -69,6 +78,11 @@ func Compress(data []byte, compression string) (result string, err error) {
 	switch compression {
 	case COMPRESSION_GZIP:
 		result, err = compressGzip(data)
+		if err != nil {
+			return
+		}
+	case COMPRESSION_BROTLI:
+		result, err = compressBrotli(data)
 		if err != nil {
 			return
 		}
@@ -122,6 +136,48 @@ func decompressGzip(data []byte) (result []byte, err error) {
 
 	var decompressed []byte
 	decompressed, err = io.ReadAll(gz)
+	if err != nil {
+		return
+	}
+
+	result = decompressed
+
+	return
+}
+
+// Compress data as brotli then encode it in base64 and return the result
+func compressBrotli(data []byte) (result string, err error) {
+	var buf bytes.Buffer
+	bw := brotli.NewWriterLevel(&buf, brotli.BestCompression)
+
+	_, err = bw.Write(data)
+	if err != nil {
+		return
+	}
+
+	// Ensure all data is written to the buffer
+	err = bw.Close()
+	if err != nil {
+		return
+	}
+
+	result = base64.StdEncoding.EncodeToString(buf.Bytes())
+
+	return
+}
+
+// Decompress base64 encoded brotli data and return the result
+func decompressBrotli(data []byte) (result []byte, err error) {
+	var decoded []byte
+	decoded, err = base64.StdEncoding.DecodeString(string(data))
+	if err != nil {
+		return
+	}
+
+	br := brotli.NewReader(bytes.NewReader(decoded))
+
+	var decompressed []byte
+	decompressed, err = io.ReadAll(br)
 	if err != nil {
 		return
 	}

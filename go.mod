@@ -1,10 +1,9 @@
 module github.com/civilware/tela
 
-go 1.21
-
-toolchain go1.21.5
+go 1.22
 
 require (
+	github.com/andybalholm/brotli v1.2.1
 	github.com/chzyer/readline v1.5.1
 	github.com/civilware/Gnomon v0.0.0-20240403103529-8b2fdb2b3106
 	github.com/creachadair/jrpc2 v0.35.4
@@ -15,7 +14,7 @@ require (
 	go.etcd.io/bbolt v1.3.7
 )
 
-replace github.com/deroproject/derohe => github.com/civilware/derohe v0.0.0-20240909003240-fa76d6016cc6
+replace github.com/deroproject/derohe => github.com/DEROFDN/derohe v0.0.0-20260527071132-5cd042e8f541
 
 require (
 	github.com/VictoriaMetrics/metrics v1.23.1 // indirect

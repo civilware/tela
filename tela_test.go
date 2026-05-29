@@ -444,6 +444,37 @@ func TestCompression(t *testing.T) {
 		assert.False(t, IsCompressedExt("unknown"), "Unknown compression extension should be false")
 		assert.False(t, IsCompressedExt(""), "Empty compression extension should be false")
 	}
+
+	// Brotli
+	for _, fileName := range testFiles {
+		fileData, err := readFile(fileName)
+		if err != nil {
+			t.Fatalf("Could not read Brotli compression test file")
+		}
+
+		data := []byte(fileData)
+
+		compressed, err := compressBrotli(data)
+		assert.NoError(t, err, "Brotli %s compression should not error: %s", fileName, err)
+		decompressed, err := decompressBrotli([]byte(compressed))
+		assert.NoError(t, err, "Brotli %s decompression should not error: %s", fileName, err)
+		assert.Equal(t, data, decompressed, "Brotli results for %s should be equal", fileName)
+
+		invalidBase64 := "!!!not_base64!!!"
+		_, err = decompressBrotli([]byte(invalidBase64))
+		assert.Error(t, err, "Brotli invalid base64 should error")
+
+		compressed, err = Compress(data, COMPRESSION_BROTLI)
+		assert.NoError(t, err, "Brotli %s public Compress should not error", fileName)
+
+		decompressed, err = Decompress([]byte(compressed), COMPRESSION_BROTLI)
+		assert.NoError(t, err, "Brotli %s public Decompress should not error", fileName)
+		assert.Equal(t, data, decompressed, "Brotli public round-trip for %s should be equal", fileName)
+
+		assert.Equal(t, fileName, TrimCompressedExt(fileName+COMPRESSION_BROTLI), "Trimmed %s brotli fileName should be equal", fileName)
+
+		assert.True(t, IsCompressedExt(COMPRESSION_BROTLI), "%s should be a valid compression extension", COMPRESSION_BROTLI)
+	}
 }
 
 func TestTELA(t *testing.T) {

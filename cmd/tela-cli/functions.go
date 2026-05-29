@@ -345,6 +345,15 @@ func completerYesNo() (options []readline.PrefixCompleterInterface) {
 	return
 }
 
+// Compression options for auto completer
+func completerCompression() (options []readline.PrefixCompleterInterface) {
+	options = append(options, readline.PcItem("none"))
+	options = append(options, readline.PcItem("gzip"))
+	options = append(options, readline.PcItem("brotli"))
+
+	return
+}
+
 // List of TELA docType options for auto completer
 func completerDocType() (options []readline.PrefixCompleterInterface) {
 	options = append(options, readline.PcItem("tela-static-1"))
@@ -685,6 +694,32 @@ func (t *tela_cli) readYesNo(text string) (confirmed bool, err error) {
 			return
 		case "y":
 			confirmed = true
+			return
+		default:
+			continue
+		}
+	}
+}
+
+// Read compression choice input, returns empty string for none
+func (t *tela_cli) readCompression(text string) (compression string, err error) {
+	completer := readline.NewPrefixCompleter(completerCompression()...)
+
+	for {
+		var line string
+		line, err = t.readLineWithCompleter(text, "", completer)
+		if err != nil {
+			return
+		}
+
+		switch strings.ToLower(line) {
+		case "none", "n":
+			return
+		case "gzip", "gz", "g":
+			compression = tela.COMPRESSION_GZIP
+			return
+		case "brotli", "br", "b":
+			compression = tela.COMPRESSION_BROTLI
 			return
 		default:
 			continue
