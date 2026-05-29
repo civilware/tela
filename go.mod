@@ -15,7 +15,7 @@ require (
 	go.etcd.io/bbolt v1.3.7
 )
 
-replace github.com/deroproject/derohe => github.com/civilware/derohe v0.0.0-20240909003240-fa76d6016cc6
+replace github.com/deroproject/derohe => github.com/DEROFDN/derohe v0.0.0-20260527071132-5cd042e8f541
 
 require (
 	github.com/VictoriaMetrics/metrics v1.23.1 // indirect

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -108,6 +109,23 @@ type TELA struct {
 		WS  *websocket.Conn
 		RPC *jrpc2.Client
 	}
+}
+
+var (
+	rpcSem = make(chan struct{}, 16) // Limit total concurrent RPC calls across all TELA operations
+)
+
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "connection") ||
+		strings.Contains(s, "abort") ||
+		strings.Contains(s, "EOF") ||
+		strings.Contains(s, "closed") ||
+		strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "no such host")
 }
 
 // Versioning structure used for package and contracts
@@ -658,7 +676,15 @@ func isShardFileName(name string) bool {
 }
 
 // Clone a TELA-DOC SCID to path from endpoint
-func cloneDOC(scid, docNum, path, endpoint string) (clone Cloning, err error) {
+func cloneDOC(scid, docNum, path, endpoint string, cancelled ...*atomic.Bool) (clone Cloning, err error) {
+	var isCancelled *atomic.Bool
+	if len(cancelled) > 0 {
+		isCancelled = cancelled[0]
+	}
+
+	if isCancelled != nil && isCancelled.Load() {
+		return clone, fmt.Errorf("cancelled")
+	}
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid DOC SCID: %s", scid)
 		return
@@ -761,7 +787,15 @@ func cloneDOC(scid, docNum, path, endpoint string) (clone Cloning, err error) {
 }
 
 // Clone a TELA-INDEX SCID to path from endpoint creating all DOCs embedded within the INDEX
-func cloneINDEX(scid, dURL, path, endpoint string) (clone Cloning, err error) {
+func cloneINDEX(scid, dURL, path, endpoint string, cancelled ...*atomic.Bool) (clone Cloning, err error) {
+	var isCancelled *atomic.Bool
+	if len(cancelled) > 0 {
+		isCancelled = cancelled[0]
+	}
+
+	if isCancelled != nil && isCancelled.Load() {
+		return clone, fmt.Errorf("cancelled")
+	}
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid INDEX SCID: %s", scid)
 		return
@@ -810,14 +844,14 @@ func cloneINDEX(scid, dURL, path, endpoint string) (clone Cloning, err error) {
 
 	// If INDEX contains DocShards to be constructed
 	if strings.HasSuffix(dURL, TAG_DOC_SHARDS) {
-		err = cloneDocShards(sc, basePath, endpoint)
+		err = cloneDocShards(sc, basePath, endpoint, cancelled...)
 		if err != nil {
 			err = fmt.Errorf("%s %s", tagErr, err)
 			return
 		}
 	} else {
 		// Parse INDEX SC for valid DOCs
-		entrypoint, servePath, err = parseAndCloneINDEXForDOCs(sc, 0, basePath, endpoint)
+		entrypoint, servePath, err = parseAndCloneINDEXForDOCs(sc, 0, basePath, endpoint, cancelled...)
 		if err != nil {
 			// If all of the files were not cloned successfully, any residual files are removed if they did not exist already
 			err = fmt.Errorf("%s %s", tagErr, err)
@@ -837,8 +871,8 @@ func cloneINDEX(scid, dURL, path, endpoint string) (clone Cloning, err error) {
 }
 
 // cloneDocShards takes a TELA-INDEX SC and parses its DOCs, creating them as DocShards which get recreated as a single file
-func cloneDocShards(sc dvm.SmartContract, basePath, endpoint string) (err error) {
-	docShards, recreate, compression, err := parseDocShards(sc, basePath, endpoint)
+func cloneDocShards(sc dvm.SmartContract, basePath, endpoint string, cancelled ...*atomic.Bool) (err error) {
+	docShards, recreate, compression, err := parseDocShards(sc, basePath, endpoint, cancelled...)
 	if err != nil {
 		err = fmt.Errorf("could not clone DocShards: %s", err)
 		return
@@ -1000,8 +1034,16 @@ func CreateShardFiles(filePath, compression string, content []byte) (err error) 
 	return
 }
 
-// Clone a TELA-INDEX SCID at commit TXID to path from endpoint creating all DOCs embedded within the INDEX at the commit height
-func cloneINDEXAtCommit(height int64, scid, txid, path, endpoint string) (clone Cloning, err error) {
+// cloneINDEXAtCommit clones a TELA-INDEX-1 SC from endpoint at commit TXID if the SC code from that commit can be decoded
+func cloneINDEXAtCommit(height int64, scid, txid, path, endpoint string, cancelled ...*atomic.Bool) (clone Cloning, err error) {
+	var isCancelled *atomic.Bool
+	if len(cancelled) > 0 {
+		isCancelled = cancelled[0]
+	}
+
+	if isCancelled != nil && isCancelled.Load() {
+		return clone, fmt.Errorf("cancelled")
+	}
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid INDEX SCID: %s", scid)
 		return
@@ -1065,14 +1107,14 @@ func cloneINDEXAtCommit(height int64, scid, txid, path, endpoint string) (clone 
 
 	// If INDEX contains DocShards to be constructed
 	if strings.HasSuffix(dURL, TAG_DOC_SHARDS) {
-		err = cloneDocShards(sc, basePath, endpoint)
+		err = cloneDocShards(sc, basePath, endpoint, cancelled...)
 		if err != nil {
 			err = fmt.Errorf("%s %s", tagErr, err)
 			return
 		}
 	} else {
 		// Parse INDEX SC for valid DOCs
-		entrypoint, servePath, err = parseAndCloneINDEXForDOCs(sc, height, basePath, endpoint)
+		entrypoint, servePath, err = parseAndCloneINDEXForDOCs(sc, height, basePath, endpoint, cancelled...)
 		if err != nil {
 			// If all of the files were not cloned successfully, any residual files are removed if they did not exist already
 			err = fmt.Errorf("%s %s", tagErr, err)
@@ -1211,7 +1253,7 @@ func serveTELA(scid string, clone Cloning) (link string, err error) {
 }
 
 // ServeTELA clones and serves a TELA-INDEX-1 SC from endpoint and returns a link to the running TELA server if successful
-func ServeTELA(scid, endpoint string) (link string, err error) {
+func ServeTELA(scid, endpoint string, cancelled ...*atomic.Bool) (link string, err error) {
 	tela.Lock()
 	defer tela.Unlock()
 
@@ -1220,7 +1262,7 @@ func ServeTELA(scid, endpoint string) (link string, err error) {
 		return
 	}
 
-	clone, err := cloneINDEX(scid, dURL, tela.path.tela(), endpoint)
+	clone, err := cloneINDEX(scid, dURL, tela.path.tela(), endpoint, cancelled...)
 	if err != nil {
 		os.RemoveAll(clone.BasePath)
 		return
@@ -1231,7 +1273,7 @@ func ServeTELA(scid, endpoint string) (link string, err error) {
 
 // ServeAtCommit clones and serves a TELA-INDEX-1 SC from endpoint at commit TXID if the SC code from that commit can be decoded,
 // ensure AllowUpdates is set true prior to calling ServeAtCommit otherwise it will return error
-func ServeAtCommit(scid, txid, endpoint string) (link string, err error) {
+func ServeAtCommit(scid, txid, endpoint string, cancelled ...*atomic.Bool) (link string, err error) {
 	tela.Lock()
 	defer tela.Unlock()
 
@@ -1245,7 +1287,7 @@ func ServeAtCommit(scid, txid, endpoint string) (link string, err error) {
 		return
 	}
 
-	clone, err := cloneINDEXAtCommit(0, scid, txid, tela.path.tela(), endpoint)
+	clone, err := cloneINDEXAtCommit(0, scid, txid, tela.path.tela(), endpoint, cancelled...)
 	if err != nil {
 		os.RemoveAll(clone.BasePath)
 		return
@@ -1256,7 +1298,7 @@ func ServeAtCommit(scid, txid, endpoint string) (link string, err error) {
 
 // OpenTELALink will open content from a telaLink formatted as tela://open/<scid>/subDir/../..
 // if no server exists for that content it will try starting one using ServeTELA()
-func OpenTELALink(telaLink, endpoint string) (link string, err error) {
+func OpenTELALink(telaLink, endpoint string, cancelled ...*atomic.Bool) (link string, err error) {
 	target, args, err := ParseTELALink(telaLink)
 	if err != nil {
 		err = fmt.Errorf("could not parse tela link: %s", err)
@@ -1274,7 +1316,7 @@ func OpenTELALink(telaLink, endpoint string) (link string, err error) {
 	}
 
 	var exists bool
-	link, err = ServeTELA(args[1], endpoint)
+	link, err = ServeTELA(args[1], endpoint, cancelled...)
 	if err != nil {
 		if !strings.Contains(err.Error(), "already exists") {
 			err = fmt.Errorf("could not serve tela link: %s", err)
@@ -1821,7 +1863,7 @@ func GetRating(scid, endpoint string, height uint64) (ratings Rating_Result, err
 	}
 
 	for k, v := range vars {
-		switch k {
+		switch decodeHexString(k) {
 		case "likes":
 			if f, ok := v.(float64); ok {
 				ratings.Likes = uint64(f)

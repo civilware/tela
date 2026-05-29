@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/deroproject/derohe/dvm"
 	"github.com/deroproject/derohe/rpc"
@@ -163,12 +164,21 @@ func parseINDEXForDOCs(sc dvm.SmartContract) (scids []string) {
 	return
 }
 
-func parseAndCloneINDEXForDOCs(sc dvm.SmartContract, height int64, basePath, endpoint string) (entrypoint, servePath string, err error) {
+func parseAndCloneINDEXForDOCs(sc dvm.SmartContract, height int64, basePath, endpoint string, cancelled ...*atomic.Bool) (entrypoint, servePath string, err error) {
+	var isCancelled *atomic.Bool
+	if len(cancelled) > 0 {
+		isCancelled = cancelled[0]
+	}
+
 	// Parse INDEX SC for valid DOCs
 	for name, function := range sc.Functions {
 		// Find initialize function and parse lines
 		if name == DVM_FUNC_INIT_PRIVATE {
 			for _, line := range function.Lines {
+				if isCancelled != nil && isCancelled.Load() {
+					err = fmt.Errorf("cancelled")
+					return
+				}
 				// Parse the contents of the line
 				for i, parts := range line {
 					if strings.Contains(parts, string(HEADER_DOCUMENT)) {
@@ -180,41 +190,41 @@ func parseAndCloneINDEXForDOCs(sc dvm.SmartContract, height int64, basePath, end
 						var c Cloning
 						_, err = getContractVar(scid, "telaVersion", endpoint)
 						if err != nil {
-							c, err = cloneDOC(scid, parts, basePath, endpoint)
-							if err != nil {
-								return
-							}
+ 							c, err = cloneDOC(scid, parts, basePath, endpoint, cancelled...)
+ 							if err != nil {
+ 								return
+ 							}
 
-							// If DOC is entrypoint set it, and if serving from subDir point to it
-							if isDOC1 {
-								entrypoint = c.Entrypoint
-								servePath = c.ServePath
-							}
-						} else {
-							if isDOC1 {
-								err = fmt.Errorf("cannot use TELA-INDEX as entrypoint for TELA-INDEX")
-								return
-							}
+ 							// If DOC is entrypoint set it, and if serving from subDir point to it
+ 							if isDOC1 {
+ 								entrypoint = c.Entrypoint
+ 								servePath = c.ServePath
+ 							}
+ 						} else {
+ 							if isDOC1 {
+ 								err = fmt.Errorf("cannot use TELA-INDEX as entrypoint for TELA-INDEX")
+ 								return
+ 							}
 
-							var dURL string
-							dURL, err = getContractVar(scid, HEADER_DURL.Trim(), endpoint)
-							if err != nil {
-								err = fmt.Errorf("could not verify TELA-INDEX dURL: %s", err)
-								return
-							}
+ 							var dURL string
+ 							dURL, err = getContractVar(scid, HEADER_DURL.Trim(), endpoint)
+ 							if err != nil {
+ 								err = fmt.Errorf("could not verify TELA-INDEX dURL: %s", err)
+ 								return
+ 							}
 
-							if !strings.HasSuffix(dURL, TAG_LIBRARY) && !strings.HasSuffix(dURL, TAG_DOC_SHARDS) {
-								err = fmt.Errorf("cannot embed TELA-INDEX without %q or %q tag", TAG_LIBRARY, TAG_DOC_SHARDS)
-								return
-							}
+ 							if !strings.HasSuffix(dURL, TAG_LIBRARY) && !strings.HasSuffix(dURL, TAG_DOC_SHARDS) {
+ 								err = fmt.Errorf("cannot embed TELA-INDEX without %q or %q tag", TAG_LIBRARY, TAG_DOC_SHARDS)
+ 								return
+ 							}
 
-							if height > 0 {
-								c, err = cloneINDEXAtCommit(height, scid, "", basePath, endpoint)
-								if err != nil {
-									return
-								}
-							} else {
-								c, err = cloneINDEX(scid, dURL, basePath, endpoint)
+ 							if height > 0 {
+ 								c, err = cloneINDEXAtCommit(height, scid, "", basePath, endpoint, cancelled...)
+ 								if err != nil {
+ 									return
+ 								}
+ 							} else {
+ 								c, err = cloneINDEX(scid, dURL, basePath, endpoint, cancelled...)
 								if err != nil {
 									return
 								}
@@ -230,7 +240,12 @@ func parseAndCloneINDEXForDOCs(sc dvm.SmartContract, height int64, basePath, end
 }
 
 // Parse a TELA-INDEX for DOCs and prepare its content as DocShards to be recreated by ConstructFromShards
-func parseDocShards(sc dvm.SmartContract, path, endpoint string) (docShards [][]byte, recreate, compression string, err error) {
+func parseDocShards(sc dvm.SmartContract, path, endpoint string, cancelled ...*atomic.Bool) (docShards [][]byte, recreate, compression string, err error) {
+	var isCancelled *atomic.Bool
+	if len(cancelled) > 0 {
+		isCancelled = cancelled[0]
+	}
+
 	scids := parseINDEXForDOCs(sc)
 
 	type shardData struct {
@@ -241,6 +256,10 @@ func parseDocShards(sc dvm.SmartContract, path, endpoint string) (docShards [][]
 	var shards []shardData
 
 	for i, scid := range scids {
+		if isCancelled != nil && isCancelled.Load() {
+			err = fmt.Errorf("cancelled")
+			return
+		}
 		if len(scid) != 64 {
 			err = fmt.Errorf("invalid DOC SCID: %s", scid)
 			return
