@@ -497,7 +497,8 @@ func (m *MODs) injectMOD(mod, code string) (modSC dvm.SmartContract, modCode str
 	return
 }
 
-// InjectMODs parses the modTag ensuring all tags are valid before injecting the TELA-MOD code for the given MODs in the modTag
+// InjectMODs parses the modTag ensuring all tags are valid before injecting the TELA-MOD code for the given MODs in the modTag,
+// when no error is returned the modSC will reflect the modCode. If an empty modTag is passed the code is returned unchanged with its parsed SC
 func (m *MODs) InjectMODs(modTag, code string) (modSC dvm.SmartContract, modCode string, err error) {
 	tags, err := m.TagsAreValid(modTag)
 	if err != nil {
@@ -505,9 +506,19 @@ func (m *MODs) InjectMODs(modTag, code string) (modSC dvm.SmartContract, modCode
 		return
 	}
 
-	modCode = code // tags could be nil otherwise start injecting mods
+	modCode = code
+	if len(tags) < 1 {
+		// No MODs to inject, parse the code so modSC always reflects modCode
+		modSC, _, err = dvm.ParseSmartContract(modCode)
+		if err != nil {
+			err = fmt.Errorf("could not parse MOD base code: %s", err)
+		}
+
+		return
+	}
+
 	for _, mod := range tags {
-		_, modCode, err = m.injectMOD(mod, modCode)
+		modSC, modCode, err = m.injectMOD(mod, modCode)
 		if err != nil {
 			return
 		}

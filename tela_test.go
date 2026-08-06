@@ -2344,6 +2344,28 @@ func TestTELA(t *testing.T) {
 		assert.NoError(t, err, "injectMOD should not error with valid code and %s tag", Mods.Tag(4))
 		_, _, err = Mods.InjectMODs(Mods.Tag(5), TELA_INDEX_1)
 		assert.NoError(t, err, "injectMOD should not error with valid code and %s tag", Mods.Tag(5))
+		// InjectMODs should always return a modSC which reflects its modCode
+		modSC, modCode, err := Mods.InjectMODs("", TELA_INDEX_1)
+		assert.NoError(t, err, "InjectMODs should not error with empty modTag")
+		assert.Equal(t, TELA_INDEX_1, modCode, "InjectMODs should not change code with empty modTag")
+		parsedSC, _, err := dvm.ParseSmartContract(modCode)
+		assert.NoError(t, err, "Parsing modCode should not error with empty modTag")
+		assert.Equal(t, parsedSC.Functions, modSC.Functions, "InjectMODs should return the SC of its code with empty modTag")
+		for i := range Mods.mods {
+			modSC, modCode, err = Mods.InjectMODs(Mods.Tag(i), TELA_INDEX_1)
+			assert.NoError(t, err, "InjectMODs should not error with valid code and %s tag", Mods.Tag(i))
+			parsedSC, _, err = dvm.ParseSmartContract(modCode)
+			assert.NoError(t, err, "Parsing modCode should not error with %s tag", Mods.Tag(i))
+			assert.Equal(t, parsedSC.Functions, modSC.Functions, "InjectMODs should return the SC of its code with %s tag", Mods.Tag(i))
+		}
+		// Multi MOD tags inject more then once, the modSC should reflect all of the MODs injected
+		for _, multiTag := range []string{"vsoo,txdwd", "txdwd,txto", "vspubow,txdwa,txto"} {
+			modSC, modCode, err = Mods.InjectMODs(multiTag, TELA_INDEX_1)
+			assert.NoError(t, err, "InjectMODs should not error with valid code and %s tags", multiTag)
+			parsedSC, _, err = dvm.ParseSmartContract(modCode)
+			assert.NoError(t, err, "Parsing modCode should not error with %s tags", multiTag)
+			assert.Equal(t, parsedSC.Functions, modSC.Functions, "InjectMODs should return the SC of its code with %s tags", multiTag)
+		}
 
 		// Test Add
 		err = Mods.Add(
