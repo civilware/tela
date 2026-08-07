@@ -794,9 +794,9 @@ func GetSmartContractFuncNames(code string) (names []string) {
 	return
 }
 
-// EqualSmartContract compares if c is equal to v by parsing function lines and parts,
-// it compares all functions other than InitializePrivate/Initialize,
-// contract returned is dvm.SmartContract of v when equal
+// EqualSmartContract compares if c is equal to v by parsing function params, return values,
+// lines and parts, the lines of InitializePrivate/Initialize are not compared as they have
+// custom defined fields, contract returned is dvm.SmartContract of v when equal
 func EqualSmartContracts(c, v string) (contract dvm.SmartContract, err error) {
 	sc1, _, err := dvm.ParseSmartContract(c)
 	if err != nil {
@@ -821,8 +821,33 @@ func EqualSmartContracts(c, v string) (contract dvm.SmartContract, err error) {
 			return
 		}
 
+		// A function's params and return value are part of its definition and are
+		// compared for all functions, the Initialize funcs included
+		if len(function.Params) != len(sc2.Functions[name].Params) {
+			err = fmt.Errorf("params are not equal: %d/%d", len(function.Params), len(sc2.Functions[name].Params))
+			return
+		}
+
+		for pi, param := range function.Params {
+			if param.Name != sc2.Functions[name].Params[pi].Name || param.Type != sc2.Functions[name].Params[pi].Type {
+				err = fmt.Errorf("params are different: %s", name)
+				return
+			}
+		}
+
+		if function.ReturnValue.Name != sc2.Functions[name].ReturnValue.Name || function.ReturnValue.Type != sc2.Functions[name].ReturnValue.Type {
+			err = fmt.Errorf("return values are different: %s", name)
+			return
+		}
+
 		// Skip Initialize funcs as they have custom defined fields
 		if name != DVM_FUNC_INIT_PRIVATE && name != DVM_FUNC_INIT {
+			// Compared so that v cannot contain lines which c does not have
+			if len(function.Lines) != len(sc2.Functions[name].Lines) {
+				err = fmt.Errorf("lines are not equal: %d/%d", len(function.Lines), len(sc2.Functions[name].Lines))
+				return
+			}
+
 			for li, line := range function.Lines {
 				if _, ok := sc2.Functions[name].Lines[li]; !ok {
 					err = fmt.Errorf("line index missing: %d", li)
