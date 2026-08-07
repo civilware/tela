@@ -477,6 +477,51 @@ func TestCompression(t *testing.T) {
 	}
 }
 
+// TestEqualSmartContracts covers the additions a contract can make to a TELA
+// contract without changing any of the template's own lines. These do not need
+// a simulator, EqualSmartContracts is what decides whether a SC found on chain
+// is served as TELA content so it is kept runnable on its own.
+func TestEqualSmartContracts(t *testing.T) {
+	// Rate() uses line numbers 10,15,16,20,30,40,50,60,70,100. Line 80 keeps them
+	// ascending, sits on the fall through from 70 so it is executed, and leaves
+	// every template line in place.
+	extraLine := strings.Replace(TELA_INDEX_1,
+		`70 STORE("dislikes", LOAD("dislikes")+1)`,
+		"70 STORE(\"dislikes\", LOAD(\"dislikes\")+1)\n80 STORE(\"injected\", 1)", 1)
+
+	// Definition changes which leave all of the lines untouched
+	extraParam := strings.Replace(TELA_INDEX_1,
+		"Function Rate(r Uint64) Uint64", "Function Rate(r Uint64, injected Uint64) Uint64", 1)
+	returnValue := strings.Replace(TELA_INDEX_1,
+		"Function address() String", "Function address() Uint64", 1)
+
+	for _, code := range []string{extraLine, extraParam, returnValue} {
+		assert.NotEqual(t, TELA_INDEX_1, code, "Test contract should have been modified")
+		_, _, err := dvm.ParseSmartContract(code)
+		assert.NoError(t, err, "Modified contract should be valid DVM code: %s", err)
+
+		_, err = EqualSmartContracts(TELA_INDEX_1, code)
+		assert.Error(t, err, "Contracts did not return error and should")
+
+		_, _, err = ValidINDEXVersion(code, "")
+		assert.Error(t, err, "Contract should not be a valid INDEX version")
+	}
+
+	// The unmodified contracts should still be equal to themselves
+	_, err := EqualSmartContracts(TELA_INDEX_1, TELA_INDEX_1)
+	assert.NoError(t, err, "INDEX contracts should be equal: %s", err)
+	_, err = EqualSmartContracts(TELA_DOC_1, TELA_DOC_1)
+	assert.NoError(t, err, "DOC contracts should be equal: %s", err)
+
+	// And a MOD enabled INDEX should still be equal to itself
+	for i := range Mods.mods {
+		_, modCode, err := Mods.InjectMODs(Mods.Tag(i), TELA_INDEX_1)
+		assert.NoError(t, err, "InjectMODs should not error with %s tag: %s", Mods.Tag(i), err)
+		_, err = EqualSmartContracts(modCode, modCode)
+		assert.NoError(t, err, "%s contracts should be equal: %s", Mods.Tag(i), err)
+	}
+}
+
 func TestTELA(t *testing.T) {
 	endpoint, datashards, wallets := createTestEnvironment(t)
 
