@@ -27,6 +27,7 @@ import (
 	"github.com/deroproject/derohe/dvm"
 	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/rpc"
+	"github.com/deroproject/derohe/transaction"
 	"github.com/deroproject/derohe/walletapi"
 	"github.com/gorilla/websocket"
 
@@ -450,6 +451,61 @@ func getTXID(txid, endpoint string) (txidAsHex string, height int64, err error) 
 	height = result.Txs[0].Block_Height
 
 	return
+}
+
+// commitSCID returns the SCID a TELA commit transaction applies to.
+//
+// A commit is one of two things. An install, where the contract's SCID is the
+// hash of the transaction that created it, so the answer is the TXID itself. Or
+// a SC_CALL, which names the contract it invokes in SC_ID. Anything else is not
+// a commit.
+func commitSCID(tx *transaction.Transaction, txid string) (scid string, err error) {
+	if tx.TransactionType != transaction.SC_TX {
+		return "", fmt.Errorf("TXID %s is not a smart contract transaction", txid)
+	}
+
+	if !tx.SCDATA.Has(rpc.SCACTION, rpc.DataUint64) {
+		return "", fmt.Errorf("TXID %s has no SC action", txid)
+	}
+
+	if rpc.SC_ACTION(tx.SCDATA.Value(rpc.SCACTION, rpc.DataUint64).(uint64)) == rpc.SC_INSTALL {
+		return txid, nil
+	}
+
+	if !tx.SCDATA.Has(rpc.SCID, rpc.DataHash) {
+		return "", fmt.Errorf("TXID %s does not name a contract", txid)
+	}
+
+	target := tx.SCDATA.Value(rpc.SCID, rpc.DataHash).(crypto.Hash)
+
+	return hex.EncodeToString(target[:]), nil
+}
+
+// commitMatchesSCID checks that a transaction was a commit against scid.
+//
+// txidAsHex is the raw transaction getTXID has already fetched, so this adds no
+// further calls to the endpoint.
+func commitMatchesSCID(txidAsHex, scid, txid string) (err error) {
+	raw, err := hex.DecodeString(txidAsHex)
+	if err != nil {
+		return fmt.Errorf("could not decode TXID data: %s", err)
+	}
+
+	var tx transaction.Transaction
+	if err = tx.Deserialize(raw); err != nil {
+		return fmt.Errorf("could not deserialize TXID data: %s", err)
+	}
+
+	target, err := commitSCID(&tx, txid)
+	if err != nil {
+		return err
+	}
+
+	if !strings.EqualFold(target, scid) {
+		return fmt.Errorf("TXID %s is a commit against %s, not %s", txid, target, scid)
+	}
+
+	return nil
 }
 
 // Get the current state of all string keys in a smart contract
@@ -1077,6 +1133,15 @@ func cloneINDEXAtCommit(height int64, scid, txid, path, endpoint string, cancell
 		txidAsHex, commitHeight, errr := getTXID(txid, endpoint)
 		if errr != nil {
 			err = fmt.Errorf("%s could not get TXID: %s", tagErr, errr)
+			return
+		}
+
+		// The code below comes from the TXID while the dURL above came from the
+		// SCID. Without this the two are never compared, and a checkout of one
+		// contract's history with another contract's TXID serves the second
+		// contract's files under the first contract's dURL.
+		if err = commitMatchesSCID(txidAsHex, scid, txid); err != nil {
+			err = fmt.Errorf("%s %s", tagErr, err)
 			return
 		}
 
