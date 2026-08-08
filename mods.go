@@ -2,6 +2,7 @@ package tela
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/civilware/tela/logger"
@@ -466,6 +467,27 @@ func (m *MODs) TagsAreValid(modTag string) (tags []string, err error) {
 	return
 }
 
+// Names which injecting a MOD would put into a contract, being the ones it declares
+// and the ones its code defines. The result is sorted so a refusal is deterministic
+func injectedNames(functionNames []string, sc dvm.SmartContract) (names []string) {
+	have := map[string]bool{}
+	for _, name := range functionNames {
+		have[name] = true
+	}
+
+	for name := range sc.Functions {
+		have[name] = true
+	}
+
+	for name := range have {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	return
+}
+
 // injectMOD injects a TELA-MOD's functions into the code of a smart contract and returns the new smart contract and new code
 func (m *MODs) injectMOD(mod, code string) (modSC dvm.SmartContract, modCode string, err error) {
 	modSC, _, err = dvm.ParseSmartContract(code)
@@ -485,6 +507,22 @@ func (m *MODs) injectMOD(mod, code string) (modSC dvm.SmartContract, modCode str
 	if err != nil {
 		err = fmt.Errorf("could not parse MOD %q code: %s", mod, err)
 		return
+	}
+
+	// A name the contract already defines is refused rather than overwritten.
+	// The injected code is appended as text while the functions are set on the
+	// parsed contract, so overwriting produced a contract carrying two
+	// definitions of the same function, which parses and silently keeps one.
+	// The names the MOD's code defines are checked as well as the ones it
+	// declares, because the whole code set is what gets appended, and a
+	// declared name its code does not define still overwrites the contract's
+	// function with an empty one. This is checked before injecting anything so
+	// a refused MOD does not leave its earlier functions on the returned contract
+	for _, name := range injectedNames(functionNames, sc) {
+		if _, exists := modSC.Functions[name]; exists {
+			err = fmt.Errorf("MOD %q function %q is already defined in this contract", mod, name)
+			return
+		}
 	}
 
 	// Inject the new MOD functions into the smart contract
