@@ -224,7 +224,9 @@ func initMods() {
 		}
 
 		// Add the variable store MODClass and its MODs
-		Mods.Add(variableStoreMODClass, variableStoreMODs)
+		if err := Mods.Add(variableStoreMODClass, variableStoreMODs); err != nil {
+			logger.Fatalf("[TELA] MODs: %s\n", err)
+		}
 	}
 
 	// // Transfers MODClass
@@ -261,7 +263,9 @@ func initMods() {
 		}
 
 		// Add the transfers MODClass and its MODs
-		Mods.Add(transferMODClass, transferMODs)
+		if err := Mods.Add(transferMODClass, transferMODs); err != nil {
+			logger.Fatalf("[TELA] MODs: %s\n", err)
+		}
 	}
 
 	// This is checked each Add but we should ensure again there is no conflicts with the initialized MODClasses and MODs
@@ -307,6 +311,16 @@ func (m *MODs) Verify() (err error) {
 		return
 	}
 
+	// A MODClass tag prefixes all of its members' tags, and both GetClass and the
+	// Single MOD rule match on that prefix. If one class tag prefixes another the
+	// two classes are indistinguishable at lookup, and the Single MOD rule counts
+	// the other class's MODs as its own, rejecting valid tag combinations.
+	prefix, of, found := hasPrefixOverlap(classTags)
+	if found {
+		err = fmt.Errorf("class tag %q cannot prefix class tag %q", prefix, of)
+		return
+	}
+
 	if len(m.classes) != len(m.index) {
 		err = fmt.Errorf("invalid MODClass index: %d/%d", len(m.classes), len(m.index))
 		return
@@ -334,6 +348,22 @@ func (m *MODs) Verify() (err error) {
 		if len(mod.FunctionNames) != len(sc.Functions) {
 			err = fmt.Errorf("missing function names for %q  %d/%d", mod.Name, len(mod.FunctionNames), len(sc.Functions))
 			return
+		}
+
+		// The count alone does not tie the declared names to the code. injectMOD
+		// copies sc.Functions[name] for each declared name, so a name the code
+		// does not define injects an empty function rather than failing here.
+		duplicate, found = hasDuplicateString(mod.FunctionNames)
+		if found {
+			err = fmt.Errorf("function name %q for %q cannot be duplicated", duplicate, mod.Name)
+			return
+		}
+
+		for _, name := range mod.FunctionNames {
+			if _, ok := sc.Functions[name]; !ok {
+				err = fmt.Errorf("function name %q for %q is not defined in its code", name, mod.Name)
+				return
+			}
 		}
 
 		modTags = append(modTags, mod.Tag)
@@ -400,6 +430,24 @@ func hasDuplicateString(check []string) (duplicate string, found bool) {
 		}
 
 		have[ele] = true
+	}
+
+	return
+}
+
+// Check if any element is a prefix of another element, in either direction.
+// Duplicates are reported by hasDuplicateString and should be checked first
+func hasPrefixOverlap(check []string) (prefix, of string, found bool) {
+	for i, a := range check {
+		for j, b := range check {
+			if i == j {
+				continue
+			}
+
+			if strings.HasPrefix(b, a) {
+				return a, b, true
+			}
+		}
 	}
 
 	return
