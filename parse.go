@@ -135,30 +135,56 @@ func ParseINDEXForDOCs(code string) (scids []string, err error) {
 }
 
 // Parse an INDEX dvm.SmartContract for its DOC SCIDs
+// docKeyNumber reports whether token is a TELA DOC key - the string "DOC"
+// followed by digits, e.g. `"DOC12"` - and returns its number.
+//
+// It replaces a substring test on `"DOC`, which also matched any header value
+// containing that text (an INDEX named "DOCS" is enough), and, when such a value
+// fell in the last two tokens of its line, drove an out-of-range read two tokens
+// on. Matching the exact key shape removes both the false positive and the panic.
+func docKeyNumber(token string) (n int, ok bool) {
+	digits := strings.TrimPrefix(strings.Trim(token, `"`), "DOC")
+	if digits == "" || digits == strings.Trim(token, `"`) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 func parseINDEXForDOCs(sc dvm.SmartContract) (scids []string) {
-	var docKeys []string
-	docMap := map[string]string{}
+	type docEntry struct {
+		num  int
+		scid string
+	}
+	var docs []docEntry
 	for name, function := range sc.Functions {
 		// Find initialize function and parse lines
-		if name == DVM_FUNC_INIT_PRIVATE {
-			for _, line := range function.Lines {
-				// Parse the contents of the line
-				for i, parts := range line {
-					if strings.Contains(parts, string(HEADER_DOCUMENT)) {
-						// Line STORE is a DOC#, find its scid
-						scid := strings.Trim(line[i+2], `"`)
-						docKeys = append(docKeys, parts)
-						docMap[parts] = scid
-					}
+		if name != DVM_FUNC_INIT_PRIVATE {
+			continue
+		}
+		for _, line := range function.Lines {
+			// Parse the contents of the line
+			for i, parts := range line {
+				num, ok := docKeyNumber(parts)
+				// The scid is two tokens on: DOC# , "scid". Skip if the line
+				// ends before that - a header value that looks like a DOC key
+				// no longer reads past the line.
+				if !ok || i+2 >= len(line) {
+					continue
 				}
+				docs = append(docs, docEntry{num: num, scid: strings.Trim(line[i+2], `"`)})
 			}
 		}
 	}
 
-	// Sort DOC scids by DOC#
-	sort.Strings(docKeys)
-	for _, v := range docKeys {
-		scids = append(scids, docMap[v])
+	// Order by DOC number, not lexicographically, so DOC10 follows DOC9 rather
+	// than DOC1.
+	sort.Slice(docs, func(a, b int) bool { return docs[a].num < docs[b].num })
+	for _, d := range docs {
+		scids = append(scids, d.scid)
 	}
 
 	return
@@ -181,7 +207,10 @@ func parseAndCloneINDEXForDOCs(sc dvm.SmartContract, height int64, basePath, end
 				}
 				// Parse the contents of the line
 				for i, parts := range line {
-					if strings.Contains(parts, string(HEADER_DOCUMENT)) {
+					// The scid is two tokens on: DOC# , "scid". A precise key
+					// match with a bounds guard keeps a header value that merely
+					// contains "DOC from reading past the end of the line.
+					if _, ok := docKeyNumber(parts); ok && i+2 < len(line) {
 						// Line STORE is a DOC#, find scid and get its document data
 						scid := strings.Trim(line[i+2], `"`)
 						isDOC1 := Header(parts) == HEADER_DOCUMENT.Number(1)
