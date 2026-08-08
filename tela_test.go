@@ -2403,8 +2403,8 @@ func TestTELA(t *testing.T) {
 				Rules: []MODClassRule{},
 			},
 			[]MOD{
-				{Name: "MOD1", Tag: "nc1", FunctionCode: func() string { return TELA_MOD_1_TXTO }, FunctionNames: []string{"Name1", "Name2"}}, // duplicate mod tags
-				{Name: "MOD2", Tag: "nc1", FunctionCode: func() string { return TELA_MOD_1_TXTO }, FunctionNames: []string{"Name1", "Name2"}},
+				{Name: "MOD1", Tag: "nc1", FunctionCode: func() string { return TELA_MOD_1_TXTO }, FunctionNames: []string{"TransferOwnership", "ClaimOwnership"}}, // duplicate mod tags
+				{Name: "MOD2", Tag: "nc1", FunctionCode: func() string { return TELA_MOD_1_TXTO }, FunctionNames: []string{"TransferOwnership", "ClaimOwnership"}},
 			},
 		)
 		assert.Error(t, err, "Adding MODs with duplicate tags should error")
@@ -2416,8 +2416,8 @@ func TestTELA(t *testing.T) {
 				Rules: []MODClassRule{},
 			},
 			[]MOD{
-				{Name: "MOD1", Tag: "nc1", FunctionCode: func() string { return TELA_MOD_1_TXTO }, FunctionNames: []string{"Name1", "Name2"}}, // duplicate mod names
-				{Name: "MOD1", Tag: "nc2", FunctionCode: func() string { return TELA_MOD_1_TXTO }, FunctionNames: []string{"Name1", "Name2"}},
+				{Name: "MOD1", Tag: "nc1", FunctionCode: func() string { return TELA_MOD_1_TXTO }, FunctionNames: []string{"TransferOwnership", "ClaimOwnership"}}, // duplicate mod names
+				{Name: "MOD1", Tag: "nc2", FunctionCode: func() string { return TELA_MOD_1_TXTO }, FunctionNames: []string{"TransferOwnership", "ClaimOwnership"}},
 			},
 		)
 		assert.Error(t, err, "Adding MODs with duplicate names should error")
@@ -2439,8 +2439,8 @@ func TestTELA(t *testing.T) {
 				Rules: []MODClassRule{},
 			},
 			[]MOD{
-				{Name: "MOD1", Tag: "nc1", FunctionCode: func() string { return TELA_MOD_1_TXTO }, FunctionNames: []string{"Name1", "Name2"}},
-				{Name: "MOD2", Tag: "nc2", FunctionCode: func() string { return TELA_MOD_1_TXTO }, FunctionNames: []string{"Name1", "Name2"}},
+				{Name: "MOD1", Tag: "nc1", FunctionCode: func() string { return TELA_MOD_1_TXTO }, FunctionNames: []string{"TransferOwnership", "ClaimOwnership"}},
+				{Name: "MOD2", Tag: "nc2", FunctionCode: func() string { return TELA_MOD_1_TXTO }, FunctionNames: []string{"TransferOwnership", "ClaimOwnership"}},
 			},
 		)
 		assert.NoError(t, err, "Adding a valid MODClass and MOD should not error: %s", err)

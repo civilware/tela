@@ -125,6 +125,8 @@ if err != nil {
 }
 ```
 
+- `Mods.Add` returns an error and adds nothing if the new `MODClass` or any of its `MODs` conflict with what is already registered. The `MODClass` tag cannot be a duplicate of an existing `MODClass` tag, and it cannot prefix one or be prefixed by one, as that tag prefix is what identifies a `MOD`'s class to `GetClass` and to the `MODClass` rules. Each `MOD` requires its own name and tag, and its `FunctionNames` must name each of the functions its code defines, once each, as those are the names injected into a contract.
+
 - The new `MOD` would now be available within its `MODClass` and can be accessed by its tag.
 ```go
 Mods.GetMod("ncone")
