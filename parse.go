@@ -54,12 +54,17 @@ func formatValue(value interface{}) string {
 	switch v := value.(type) {
 	case uint64:
 		return fmt.Sprintf("%d", v)
-	case string:
-		return fmt.Sprintf(`"%s"`, v)
 	case int:
 		return fmt.Sprintf("%d", uint64(v))
+	case string:
+		// strconv.Quote, not `"%s"`: a header value containing a quote,
+		// backslash or newline otherwise produces a broken string literal - a
+		// trailing "\" escapes the closing quote, and the DVM evaluates literals
+		// with strconv.Unquote (dvm.go), which panics on the malformed result.
+		// Quote is the exact inverse of that Unquote, so any value round-trips.
+		return strconv.Quote(v)
 	default:
-		return fmt.Sprintf(`"%s"`, strings.ReplaceAll(fmt.Sprintf("%v", v), "\n", " "))
+		return strconv.Quote(fmt.Sprintf("%v", v))
 	}
 }
 
