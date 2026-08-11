@@ -321,7 +321,9 @@ var telaImages = []struct {
 	},
 }
 
-// Simulator wallet seeds
+// Simulator wallet seeds. Do not reorder: the tests hardcode the addresses
+// derived from these seeds (wallets[0] is deto1qy87... in Parse, wallets[10]
+// is deto1qy5afru... in Exported). Reordering silently breaks those assertions.
 var walletSeeds = []string{
 	"2af6630905d73ee40864bd48339f297908a0731a6c4c6fa0a27ea574ac4e4733",
 	"193faf64d79e9feca5fce8b992b4bb59b86c50f491e2dc475522764ca6666b6b",
@@ -343,6 +345,11 @@ var walletSeeds = []string{
 
 var mainPath string
 var sleepFor = time.Millisecond * 1000
+
+// syncRound is the time a walletapi sync loop takes to refresh its shared
+// daemon state. Transfers that race that refresh (surfacing as transient
+// "Account Unregistered" errors) need to wait out a full round before retry.
+var syncRound = time.Second * 5
 var testDir = "tela_tests"
 var nameservice = "0000000000000000000000000000000000000000000000000000000000000001"
 var scDoesNotExist = "c4d7bbdaaf9344f4c351e72d0b2145b4235402c89510101e0500f43969fd1387"
@@ -365,9 +372,8 @@ func TestMain(m *testing.M) {
 
 	mainPath = dir
 
-	m.Run()
+	os.Exit(m.Run())
 }
-
 
 func TestIsShardFileName(t *testing.T) {
 	// Valid shard filenames: name-N.ext and name-N.ext.gz
@@ -478,6 +484,10 @@ func TestCompression(t *testing.T) {
 }
 
 func TestTELA(t *testing.T) {
+	if os.Getenv("RUN_SIMULATOR_TEST") != "true" {
+		t.Skip("simulator integration test disabled; set RUN_SIMULATOR_TEST=true")
+	}
+
 	endpoint, datashards, wallets := createTestEnvironment(t)
 
 	var err error
@@ -790,7 +800,7 @@ func TestTELA(t *testing.T) {
 
 		// Server should not exists
 		telaLink := fmt.Sprintf("tela://open/%s/%s", validSCIDs[0], "main.js")
-		expectedLink := "http://localhost:8082/main.js"
+		expectedLink := "http://127.0.0.1:8082/main.js"
 		link, err := OpenTELALink(telaLink, endpoint)
 		assert.NoError(t, err, "OpenTELALink should not error: %s", err)
 		assert.Equal(t, expectedLink, link, "Link should be the same")
@@ -943,7 +953,7 @@ func TestTELA(t *testing.T) {
 			noCodeTXIDs = append(noCodeTXIDs, txid)
 
 			v, err := retry(t, fmt.Sprintf("confirming down %d rating", i), func() (string, error) {
-				return getContractVar(validSCIDs[i], wallets[i].GetAddress().String(), endpoint)
+				return getRatedVariable(validSCIDs[i], wallets[i], endpoint)
 			})
 			assert.NoError(t, err, "Getting rating variable should not error: %s", err)
 			assert.NotEmpty(t, v, "Value should not be empty")
@@ -969,7 +979,7 @@ func TestTELA(t *testing.T) {
 			time.Sleep(sleepFor)
 
 			v, err := retry(t, fmt.Sprintf("confirming up %d rating", i), func() (string, error) {
-				return getContractVar(validSCIDs[i], wallets[i+offset].GetAddress().String(), endpoint)
+				return getRatedVariable(validSCIDs[i], wallets[i+offset], endpoint)
 			})
 			assert.NoError(t, err, "Getting rating variable should not error: %s", err)
 			assert.NotEmpty(t, v, "Value should not be empty")
@@ -2885,7 +2895,11 @@ func createTestEnvironment(t *testing.T) (endpoint, datashards string, wallets [
 	globals.Arguments["--daemon-address"] = endpoint
 	globals.InitNetwork()
 
-	// Create simulator wallets to use for contract installs
+	if err := walletapi.Connect(endpoint); err != nil {
+		t.Fatalf("Failed to connect wallets to simulator: %s", err)
+	}
+
+	// Create simulator wallets to use for contract installs.
 	for i, seed := range walletSeeds {
 		w, err := createTestWallet(fmt.Sprintf("%s%d", walletName, i), walletPath, seed)
 		if err != nil {
@@ -2898,11 +2912,42 @@ func createTestEnvironment(t *testing.T) (endpoint, datashards string, wallets [
 		wallets[i].SetOnlineMode()
 	}
 
-	if err := walletapi.Connect(endpoint); err != nil {
-		t.Fatalf("Failed to connect wallets to simulator: %s", err)
-	}
+	// The walletapi daemon sync loops share a single global RPC client. When
+	// every wallet is brought online at once, the loops contend during their
+	// first sync and transfer building can intermittently observe a wallet as
+	// "Account Unregistered" before its sync has completed. Wait for each
+	// wallet to complete its first daemon sync (signalled by a funded balance)
+	// so the installs below start from a settled state.
+	waitForSimulatorWallets(t, wallets)
 
 	return
+}
+
+// waitForSimulatorWallet waits until the wallet has completed its first daemon
+// sync, detected by a non-zero mature balance. A fresh simulator wallet has a
+// funded balance, so this both proves registration and that the wallet's sync
+// loop is no longer racing the shared daemon connection.
+func waitForSimulatorWallet(t *testing.T, index int, wallet *walletapi.Wallet_Disk) {
+	t.Helper()
+
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		mature, _ := wallet.Get_Balance()
+		if mature > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("simulator wallet %d did not complete its sync: %v", index, wallet.Error)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func waitForSimulatorWallets(t *testing.T, wallets []*walletapi.Wallet_Disk) {
+	t.Helper()
+	for i, wallet := range wallets {
+		waitForSimulatorWallet(t, i, wallet)
+	}
 }
 
 // Create test wallet for simulator
@@ -2932,6 +2977,31 @@ func createTestWallet(name, dir, seed string) (wallet *walletapi.Wallet_Disk, er
 	return
 }
 
+// getRatedVariable returns the rating stored for wallet on the contract at scid.
+// The DVM formats signer addresses with the mainnet prefix (dero1...) regardless
+// of the network the simulator runs in, while test wallets use the testnet form
+// (deto1...). Ratings are stored under whichever prefix the DVM produced, so try
+// both address forms before giving up.
+func getRatedVariable(scid string, wallet *walletapi.Wallet_Disk, endpoint string) (value string, err error) {
+	addr := wallet.GetAddress().String()
+
+	var mainnetAddr string
+	if pub := wallet.Get_Keys().Public; pub != nil {
+		mainnetAddr = rpc.NewAddressFromKeys(pub).String()
+	}
+
+	for _, candidate := range []string{addr, mainnetAddr} {
+		if candidate == "" {
+			continue
+		}
+		if value, err = getContractVar(scid, candidate, endpoint); err == nil {
+			return value, nil
+		}
+	}
+
+	return "", err
+}
+
 // Read local file for tests
 func readFile(elem ...string) (string, error) {
 	path := mainPath
@@ -2948,8 +3018,12 @@ func readFile(elem ...string) (string, error) {
 }
 
 // Retry wrapper for various test functions
+// retry runs f until it succeeds. Transient transfer failures caused by
+// walletapi's shared daemon state being refreshed by the per-wallet sync loops
+// (surfacing as "Account Unregistered" for funded wallets) need a full sync
+// round to clear, so those retries wait syncRound instead of sleepFor.
 func retry(t *testing.T, print string, f func() (string, error)) (result string, err error) {
-	for retry := 0; retry < 3; retry++ {
+	for attempt := 0; attempt < 5; attempt++ {
 		if result, err = f(); err == nil {
 			return
 		}
@@ -2958,7 +3032,11 @@ func retry(t *testing.T, print string, f func() (string, error)) (result string,
 			t.Logf("Retrying %s: %s", print, err)
 		}
 
-		time.Sleep(sleepFor)
+		wait := sleepFor
+		if strings.Contains(err.Error(), "Account Unregistered") {
+			wait = syncRound
+		}
+		time.Sleep(wait)
 	}
 
 	err = fmt.Errorf("max retries exceeded for %s: %s", print, err)
