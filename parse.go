@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/deroproject/derohe/dvm"
@@ -24,6 +25,34 @@ const (
 	MAX_DOC_INSTALL_SIZE   = float64(19.2)  // DOC SC total file size (including docCode) should be below this
 	MAX_INDEX_INSTALL_SIZE = float64(11.64) // INDEX SC file size should be below this
 )
+
+// isShardFileName checks if fileName matches the DocShard pattern: name-N.ext or name-N.ext.gz
+func isShardFileName(fileName string) bool {
+	if fileName == "" {
+		return false
+	}
+
+	// Remove compression extension if present
+	fileName = TrimCompressedExt(fileName)
+
+	// Strip the file extension
+	fileName = strings.TrimSuffix(fileName, filepath.Ext(fileName))
+
+	// Find the last dash
+	lastDash := strings.LastIndex(fileName, "-")
+	if lastDash == -1 || lastDash == 0 {
+		return false
+	}
+
+	// Check if suffix after dash is a positive integer
+	suffix := fileName[lastDash+1:]
+	if suffix == "" {
+		return false
+	}
+
+	_, err := strconv.Atoi(suffix)
+	return err == nil
+}
 
 // Append docCode to TELA-DOC-1 smart contract
 func appendDocCode(code, docCode string) (newCode string, err error) {
@@ -123,7 +152,7 @@ func ParseDocType(fileName string) (language string) {
 
 // Parse an INDEX contract string for its DOC SCIDs
 func ParseINDEXForDOCs(code string) (scids []string, err error) {
-	sc, _, err := dvm.ParseSmartContract(code)
+	sc, _, err := dvm.ParseSmartContract(strings.ReplaceAll(code, "\x00", ""))
 	if err != nil {
 		err = fmt.Errorf("could not parse SCID: %s", err)
 		return
@@ -141,7 +170,8 @@ func parseINDEXForDOCs(sc dvm.SmartContract) (scids []string) {
 	for name, function := range sc.Functions {
 		// Find initialize function and parse lines
 		if name == DVM_FUNC_INIT_PRIVATE {
-			for _, line := range function.Lines {
+			for _, ln := range function.LineNumbers {
+				line := function.Lines[ln]
 				// Parse the contents of the line
 				for i, parts := range line {
 					if strings.Contains(parts, string(HEADER_DOCUMENT)) {
@@ -156,7 +186,12 @@ func parseINDEXForDOCs(sc dvm.SmartContract) (scids []string) {
 	}
 
 	// Sort DOC scids by DOC#
-	sort.Strings(docKeys)
+	sort.Slice(docKeys, func(i, j int) bool {
+		numI, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(docKeys[i], string(HEADER_DOCUMENT)), `"`))
+		numJ, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(docKeys[j], string(HEADER_DOCUMENT)), `"`))
+		return numI < numJ
+	})
+
 	for _, v := range docKeys {
 		scids = append(scids, docMap[v])
 	}
@@ -170,71 +205,110 @@ func parseAndCloneINDEXForDOCs(sc dvm.SmartContract, height int64, basePath, end
 		isCancelled = cancelled[0]
 	}
 
-	// Parse INDEX SC for valid DOCs
+	type docTask struct {
+		scid   string
+		parts  string
+		isDOC1 bool
+	}
+
+	var tasks []docTask
+
+	// Parse INDEX SC for valid DOCs and collect tasks
 	for name, function := range sc.Functions {
-		// Find initialize function and parse lines
 		if name == DVM_FUNC_INIT_PRIVATE {
-			for _, line := range function.Lines {
-				if isCancelled != nil && isCancelled.Load() {
-					err = fmt.Errorf("cancelled")
-					return
-				}
-				// Parse the contents of the line
+			for _, ln := range function.LineNumbers {
+				line := function.Lines[ln]
 				for i, parts := range line {
 					if strings.Contains(parts, string(HEADER_DOCUMENT)) {
-						// Line STORE is a DOC#, find scid and get its document data
 						scid := strings.Trim(line[i+2], `"`)
-						isDOC1 := Header(parts) == HEADER_DOCUMENT.Number(1)
-
-						// Check if scid is INDEX or DOC and handle accordingly
-						var c Cloning
-						_, err = getContractVar(scid, "telaVersion", endpoint)
-						if err != nil {
- 							c, err = cloneDOC(scid, parts, basePath, endpoint, cancelled...)
- 							if err != nil {
- 								return
- 							}
-
- 							// If DOC is entrypoint set it, and if serving from subDir point to it
- 							if isDOC1 {
- 								entrypoint = c.Entrypoint
- 								servePath = c.ServePath
- 							}
- 						} else {
- 							if isDOC1 {
- 								err = fmt.Errorf("cannot use TELA-INDEX as entrypoint for TELA-INDEX")
- 								return
- 							}
-
- 							var dURL string
- 							dURL, err = getContractVar(scid, HEADER_DURL.Trim(), endpoint)
- 							if err != nil {
- 								err = fmt.Errorf("could not verify TELA-INDEX dURL: %s", err)
- 								return
- 							}
-
- 							if !strings.HasSuffix(dURL, TAG_LIBRARY) && !strings.HasSuffix(dURL, TAG_DOC_SHARDS) {
- 								err = fmt.Errorf("cannot embed TELA-INDEX without %q or %q tag", TAG_LIBRARY, TAG_DOC_SHARDS)
- 								return
- 							}
-
- 							if height > 0 {
- 								c, err = cloneINDEXAtCommit(height, scid, "", basePath, endpoint, cancelled...)
- 								if err != nil {
- 									return
- 								}
- 							} else {
- 								c, err = cloneINDEX(scid, dURL, basePath, endpoint, cancelled...)
-								if err != nil {
-									return
-								}
-							}
-						}
+						tasks = append(tasks, docTask{
+							scid:   scid,
+							parts:  parts,
+							isDOC1: Header(parts) == HEADER_DOCUMENT.Number(1),
+						})
 					}
 				}
 			}
 		}
 	}
+
+	if len(tasks) == 0 {
+		return
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	sem := make(chan struct{}, 4) // Limit top-level parallel clones to 4 to avoid overwhelming the RPC semaphore queue
+
+	for _, t := range tasks {
+		mu.Lock()
+		if firstErr != nil {
+			mu.Unlock()
+			break
+		}
+		mu.Unlock()
+
+		wg.Add(1)
+		sem <- struct{}{}
+
+		go func(task docTask) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			if isCancelled != nil && isCancelled.Load() {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("cancelled")
+				}
+				mu.Unlock()
+				return
+			}
+
+			// Check if scid is INDEX or DOC and handle accordingly
+			var c Cloning
+			var taskErr error
+			_, taskErr = getContractVar(task.scid, "telaVersion", endpoint)
+			if taskErr != nil {
+				c, taskErr = cloneDOC(task.scid, task.parts, basePath, endpoint, cancelled...)
+				if taskErr == nil && task.isDOC1 {
+					mu.Lock()
+					entrypoint = c.Entrypoint
+					servePath = c.ServePath
+					mu.Unlock()
+				}
+			} else {
+				if task.isDOC1 {
+					taskErr = fmt.Errorf("cannot use TELA-INDEX as entrypoint for TELA-INDEX")
+				} else {
+					var dURL string
+					dURL, taskErr = getContractVar(task.scid, HEADER_DURL.Trim(), endpoint)
+					if taskErr == nil {
+						if !strings.HasSuffix(dURL, TAG_LIBRARY) && !strings.HasSuffix(dURL, TAG_DOC_SHARDS) {
+							taskErr = fmt.Errorf("cannot embed TELA-INDEX without %q or %q tag", TAG_LIBRARY, TAG_DOC_SHARDS)
+						} else {
+							if height > 0 {
+								c, taskErr = cloneINDEXAtCommit(height, task.scid, "", basePath, endpoint, cancelled...)
+							} else {
+								c, taskErr = cloneINDEX(task.scid, dURL, basePath, endpoint, cancelled...)
+							}
+						}
+					}
+				}
+			}
+
+			if taskErr != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = taskErr
+				}
+				mu.Unlock()
+			}
+		}(t)
+	}
+
+	wg.Wait()
+	err = firstErr
 
 	return
 }
@@ -247,113 +321,139 @@ func parseDocShards(sc dvm.SmartContract, path, endpoint string, cancelled ...*a
 	}
 
 	scids := parseINDEXForDOCs(sc)
-
-	type shardData struct {
-		index int
-		data  []byte
+	if len(scids) == 0 {
+		return
 	}
 
-	var shards []shardData
+	docShards = make([][]byte, len(scids))
 
-	for i, scid := range scids {
-		if isCancelled != nil && isCancelled.Load() {
-			err = fmt.Errorf("cancelled")
-			return
-		}
-		if len(scid) != 64 {
-			err = fmt.Errorf("invalid DOC SCID: %s", scid)
-			return
-		}
-
-		var code string
-		code, err = getContractCode(scid, endpoint)
-		if err != nil {
-			err = fmt.Errorf("could not get SC code from %s: %s", scid, err)
-			return
-		}
-
-		_, _, err = ValidDOCVersion(code)
-		if err != nil {
-			err = fmt.Errorf("scid does not parse as TELA-DOC-1: %s", err)
-			return
-		}
-
-		var docType string
-		docType, err = getContractVar(scid, HEADER_DOCTYPE.Trim(), endpoint)
-		if err != nil {
-			err = fmt.Errorf("could not get docType from %s: %s", scid, err)
-			return
-		}
-
-		var fileName string
-		if fileName, err = getContractVar(scid, HEADER_NAME_V2.Trim(), endpoint); err != nil {
-			fileName, err = getContractVar(scid, HEADER_NAME.Trim(), endpoint)
-			if err != nil {
-				err = fmt.Errorf("could not get nameHdr from %s", scid)
-				return
-			}
-		}
-
-		if i == 0 {
-			ext := filepath.Ext(fileName)
-			if IsCompressedExt(ext) {
-				compression = ext
-			}
-
-			recreate = strings.ReplaceAll(strings.TrimSuffix(fileName, compression), "-1.", ".")
-			filePath := filepath.Join(path, recreate)
-			if _, err = os.Stat(filePath); !os.IsNotExist(err) {
-				err = fmt.Errorf("file %s already exists", filePath)
-				return
-			}
-
-			// May be empty so don't return error
-			if subDir, err := getContractVar(scid, HEADER_SUBDIR.Trim(), endpoint); err == nil && subDir != "" {
-				recreate = filepath.Join(subDir, recreate)
-			}
-		}
-
-		if !IsAcceptedLanguage(docType) {
-			err = fmt.Errorf("%s is not an accepted language for DOC %s", docType, fileName)
-			return
-		}
-
-		var shard []byte
-		shard, err = parseDocShardCode(fileName, code)
-		if err != nil {
-			return
-		}
-
-		// Parse shard number from filename
-		baseName := fileName
-		if compression != "" {
-			baseName = strings.TrimSuffix(fileName, compression)
-		}
-		origExt := filepath.Ext(baseName)
-		baseName = strings.TrimSuffix(baseName, origExt)
-		shardSplit := strings.Split(baseName, "-")
-		if len(shardSplit) < 2 {
-			err = fmt.Errorf("invalid shard filename format: %s", fileName)
-			return
-		}
-		shardNumStr := shardSplit[len(shardSplit)-1]
-		shardNum, parseErr := strconv.Atoi(shardNumStr)
-		if parseErr != nil {
-			err = fmt.Errorf("could not parse shard number from %s: %s", fileName, parseErr)
-			return
-		}
-
-		shards = append(shards, shardData{index: shardNum, data: shard})
+	// Process first shard to get metadata
+	scid0 := scids[0]
+	if isCancelled != nil && isCancelled.Load() {
+		err = fmt.Errorf("cancelled")
+		return
 	}
 
-	// Sort shards by index
-	sort.Slice(shards, func(i, j int) bool {
-		return shards[i].index < shards[j].index
-	})
+	if len(scid0) != 64 {
+		err = fmt.Errorf("invalid DOC SCID: %s", scid0)
+		return
+	}
 
-	// Extract sorted data
-	for _, s := range shards {
-		docShards = append(docShards, s.data)
+	var code0 string
+	code0, err = getContractCode(scid0, endpoint)
+	if err != nil {
+		err = fmt.Errorf("could not get SC code from %s: %s", scid0, err)
+		return
+	}
+
+	_, _, err = ValidDOCVersion(code0)
+	if err != nil {
+		err = fmt.Errorf("scid does not parse as TELA-DOC-1: %s", err)
+		return
+	}
+
+	var docType0 string
+	docType0, err = getContractVar(scid0, HEADER_DOCTYPE.Trim(), endpoint)
+	if err != nil {
+		err = fmt.Errorf("could not get docType from %s: %s", scid0, err)
+		return
+	}
+
+	var fileName0 string
+	if fileName0, err = getContractVar(scid0, HEADER_NAME_V2.Trim(), endpoint); err != nil {
+		fileName0, err = getContractVar(scid0, HEADER_NAME.Trim(), endpoint)
+		if err != nil {
+			err = fmt.Errorf("could not get nameHdr from %s", scid0)
+			return
+		}
+	}
+
+	ext := filepath.Ext(fileName0)
+	if IsCompressedExt(ext) {
+		compression = ext
+	}
+
+	recreate = strings.ReplaceAll(strings.TrimSuffix(fileName0, compression), "-1.", ".")
+	filePath := filepath.Join(path, recreate)
+	if _, err = os.Stat(filePath); !os.IsNotExist(err) {
+		err = fmt.Errorf("file %s already exists", filePath)
+		return
+	}
+
+	// May be empty so don't return error
+	if subDir, err := getContractVar(scid0, HEADER_SUBDIR.Trim(), endpoint); err == nil && subDir != "" {
+		recreate = filepath.Join(subDir, recreate)
+	}
+
+	if !IsAcceptedLanguage(docType0) {
+		err = fmt.Errorf("%s is not an accepted language for DOC %s", docType0, fileName0)
+		return
+	}
+
+	shard0, err := parseDocShardCode(fileName0, code0)
+	if err != nil {
+		return
+	}
+	docShards[0] = shard0
+
+	// Fetch remaining shards in parallel
+	if len(scids) > 1 {
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var firstErr error
+		sem := make(chan struct{}, 8) // Limit shard concurrency to 8
+
+		for i := 1; i < len(scids); i++ {
+			mu.Lock()
+			if firstErr != nil {
+				mu.Unlock()
+				break
+			}
+			mu.Unlock()
+
+			wg.Add(1)
+			sem <- struct{}{}
+
+			go func(idx int) {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				if isCancelled != nil && isCancelled.Load() {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("cancelled")
+					}
+					mu.Unlock()
+					return
+				}
+
+				scid := scids[idx]
+				code, e := getContractCode(scid, endpoint)
+				if e != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("could not get SC code from %s: %s", scid, e)
+					}
+					mu.Unlock()
+					return
+				}
+
+				// We skip metadata validation for shards > 0 for performance as they are expected to be ordered
+				shard, e := parseDocShardCode("shard", code)
+				if e != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = e
+					}
+					mu.Unlock()
+					return
+				}
+
+				docShards[idx] = shard
+			}(i)
+		}
+		wg.Wait()
+		err = firstErr
 	}
 
 	return
@@ -454,7 +554,7 @@ func ParseSignature(input []byte) (address, c, s string, err error) {
 // ParseHeaders takes a headerType and SC code string then returns a formatted SC string with those header values
 // See ART-NFA and TELA docs for detailed header info
 func ParseHeaders(code string, headerType interface{}) (formatted string, err error) {
-	sc, _, err := dvm.ParseSmartContract(code)
+	sc, _, err := dvm.ParseSmartContract(strings.ReplaceAll(code, "\x00", ""))
 	if err != nil {
 		err = fmt.Errorf("error parsing code: %s", err)
 		return
@@ -798,6 +898,9 @@ func GetSmartContractFuncNames(code string) (names []string) {
 // it compares all functions other than InitializePrivate/Initialize,
 // contract returned is dvm.SmartContract of v when equal
 func EqualSmartContracts(c, v string) (contract dvm.SmartContract, err error) {
+	c = strings.ReplaceAll(c, "\x00", "")
+	v = strings.ReplaceAll(v, "\x00", "")
+
 	sc1, _, err := dvm.ParseSmartContract(c)
 	if err != nil {
 		err = fmt.Errorf("could not parse c contract")
@@ -939,7 +1042,7 @@ func createContractVersions(isDOC bool, modTag string) (versions []Version, scCo
 
 		// Inject the SC version number
 		newCode := fmt.Sprintf("%s%s%s", code[:lineIndex], versionLine+newVersion, code[lineIndex+len(versionLine)+len(newVersion):])
-		sc, _, err := dvm.ParseSmartContract(newCode)
+		sc, _, err := dvm.ParseSmartContract(strings.ReplaceAll(newCode, "\x00", ""))
 		if err != nil {
 			continue
 		}

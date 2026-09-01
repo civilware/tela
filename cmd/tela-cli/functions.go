@@ -120,8 +120,14 @@ func (t *tela_cli) parseFlags() (arguments map[string]string) {
 			globals.Arguments[flag] = true
 			logger.Printf("[%s] %s enabled\n", appName, flag)
 			if flag == "--simulator" {
-				globals.Arguments["--testnet"] = true
+				t.endpoint = "127.0.0.1:20000"
+			} else if flag == "--testnet" {
+				t.endpoint = "127.0.0.1:40402"
 			}
+			if _, ok := globals.Arguments["--testnet"]; !ok {
+				globals.Arguments["--testnet"] = false
+			}
+			globals.InitNetwork()
 		case "--debug":
 			globals.Arguments["--debug"] = true
 		}
@@ -132,6 +138,10 @@ func (t *tela_cli) parseFlags() (arguments map[string]string) {
 		globals.Arguments["--testnet"] = false
 		globals.Arguments["--simulator"] = false
 		logger.Printf("[%s] --mainnet enabled\n", appName)
+		globals.InitNetwork()
+		if t.endpoint == "" {
+			t.endpoint = "127.0.0.1:10102"
+		}
 	}
 
 	if arg, ok := arguments["--db-type"]; ok {
@@ -490,8 +500,16 @@ func (t *tela_cli) openWallet(file, password string) (err error) {
 	t.wallet.name = file
 
 	// Connect wallet
-	t.wallet.disk.SetNetwork(globals.IsMainnet())
 	t.wallet.disk.SetOnlineMode()
+	if t.endpoint == "" {
+		if globals.IsSimulator() {
+			t.endpoint = "127.0.0.1:20000"
+		} else if !globals.IsMainnet() {
+			t.endpoint = "127.0.0.1:40402"
+		} else {
+			t.endpoint = "127.0.0.1:10102"
+		}
+	}
 	if !walletapi.Connected {
 		err = walletapi.Connect(t.endpoint)
 		if err != nil {
@@ -1780,7 +1798,7 @@ func findDocShardFiles(filePath string) (docShards [][]byte, recreate, compressi
 		shardFileName := file.Name()
 		if strings.HasPrefix(shardFileName, prefix) && filepath.Ext(shardFileName) == ext {
 			// Parse the shard number
-			baseName := strings.TrimSuffix(shardFileName, ext)  // remove compression ext, e.g., .gz
+			baseName := strings.TrimSuffix(shardFileName, ext) // remove compression ext, e.g., .gz
 			if compression != "" {
 				// If compressed, also remove the original ext
 				origExt := filepath.Ext(strings.TrimSuffix(fileName, ext))

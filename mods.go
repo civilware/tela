@@ -325,7 +325,7 @@ func (m *MODs) Verify() (err error) {
 		}
 
 		var sc dvm.SmartContract
-		sc, _, err = dvm.ParseSmartContract(mod.FunctionCode())
+		sc, _, err = dvm.ParseSmartContract(strings.ReplaceAll(mod.FunctionCode(), "\x00", ""))
 		if err != nil {
 			err = fmt.Errorf("function code for %q is invalid: %s", mod.Name, err)
 			return
@@ -468,7 +468,7 @@ func (m *MODs) TagsAreValid(modTag string) (tags []string, err error) {
 
 // injectMOD injects a TELA-MOD's functions into the code of a smart contract and returns the new smart contract and new code
 func (m *MODs) injectMOD(mod, code string) (modSC dvm.SmartContract, modCode string, err error) {
-	modSC, _, err = dvm.ParseSmartContract(code)
+	modSC, _, err = dvm.ParseSmartContract(strings.ReplaceAll(code, "\x00", ""))
 	if err != nil {
 		err = fmt.Errorf("could not parse MOD base code: %s", err)
 		return
@@ -481,7 +481,7 @@ func (m *MODs) injectMOD(mod, code string) (modSC dvm.SmartContract, modCode str
 		return
 	}
 
-	sc, _, err := dvm.ParseSmartContract(modCodeSet)
+	sc, _, err := dvm.ParseSmartContract(strings.ReplaceAll(modCodeSet, "\x00", ""))
 	if err != nil {
 		err = fmt.Errorf("could not parse MOD %q code: %s", mod, err)
 		return
